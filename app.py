@@ -1,11 +1,12 @@
 import json
 import math
+import re
 import sqlite3
 import textwrap
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -627,6 +628,59 @@ def oran_temizle(deger: float | None, oran_tipi: str) -> float | None:
     return float(deger) if oran_gecerli_mi(deger, oran_tipi) else None
 
 
+def sapma_orani(aday: float | None, referans: float | None) -> float | None:
+    if not aday or not referans:
+        return None
+    return abs(aday - referans) / referans
+
+
+def metinden_oran_cek(metin: str, etiketler: list[str]) -> float | None:
+    for etiket in etiketler:
+        desen = rf"{re.escape(etiket)}\s+(-?\d+(?:[.,]\d+)?)"
+        eslesme = re.search(desen, metin, flags=re.IGNORECASE)
+        if eslesme:
+            return pozitif_sayi(eslesme.group(1).replace(",", ""))
+    return None
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def public_oranlari_getir(ticker: str) -> dict:
+    ticker = ticker.upper()
+    if ticker.endswith(".IS"):
+        url = f"https://stockanalysis.com/quote/ist/{ticker.removesuffix('.IS')}/statistics/"
+    else:
+        url = f"https://stockanalysis.com/stocks/{ticker.lower()}/statistics/"
+
+    try:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=8) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return {"fk": None, "pd_dd": None, "kaynak": None}
+
+    metin = unescape(re.sub(r"<[^>]+>", " ", html))
+    metin = re.sub(r"\s+", " ", metin)
+    return {
+        "fk": metinden_oran_cek(metin, ["PE Ratio", "P/E Ratio"]),
+        "pd_dd": metinden_oran_cek(metin, ["PB Ratio", "P/B Ratio", "Price to Book"]),
+        "kaynak": url,
+    }
+
+
+def public_ile_dogrula(aday: float | None, public_deger: float | None, oran_tipi: str) -> float | None:
+    aday = oran_temizle(aday, oran_tipi)
+    public_deger = oran_temizle(public_deger, oran_tipi)
+    if public_deger is None:
+        return aday
+    if aday is None:
+        return public_deger
+
+    sapma = sapma_orani(aday, public_deger)
+    if sapma is not None and sapma > 0.35:
+        return public_deger
+    return aday
+
+
 def hisse_basi_oran_hesapla(ticker: str, info: dict) -> tuple[float | None, float | None]:
     fiyat = pozitif_sayi(info.get("currentPrice") or info.get("regularMarketPrice"))
     eps = pozitif_sayi(info.get("trailingEps"))
@@ -650,6 +704,7 @@ def guvenilir_fk_pd_dd(ticker: str, info: dict) -> tuple[float | None, float | N
     raw_fk = pozitif_sayi(info.get("trailingPE"))
     raw_pd_dd = pozitif_sayi(info.get("priceToBook"))
     hisse_basi_fk, hisse_basi_pd_dd = hisse_basi_oran_hesapla(ticker, info)
+    public_oranlar = public_oranlari_getir(ticker)
 
     if ticker.upper().endswith(".IS"):
         tablo_oranlari = finansal_tablodan_oran_getir(ticker.upper(), info.get("marketCap"))
@@ -670,9 +725,15 @@ def guvenilir_fk_pd_dd(ticker: str, info: dict) -> tuple[float | None, float | N
             if tercih_edilebilir_oran(tablo_pd_dd, 20)
             else raw_pd_dd
         )
-        return fk, pd_dd
+        return (
+            public_ile_dogrula(fk, public_oranlar.get("fk"), "fk"),
+            public_ile_dogrula(pd_dd, public_oranlar.get("pd_dd"), "pd_dd"),
+        )
 
-    return raw_fk, raw_pd_dd
+    return (
+        public_ile_dogrula(raw_fk, public_oranlar.get("fk"), "fk"),
+        public_ile_dogrula(raw_pd_dd, public_oranlar.get("pd_dd"), "pd_dd"),
+    )
 
 
 def gecmise_ekle(ticker: str) -> None:

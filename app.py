@@ -47,6 +47,8 @@ ANALIZ_EVRENI = sorted(
             "BP", "KO", "PEP", "WMT", "COST", "HD", "NKE", "MCD",
             "DAL", "UAL", "AAL", "LUV", "RYAAY", "ALK", "CPA", "IAG.L",
             "AIR.PA", "LHA.DE", "LMT", "RTX", "NOC", "GD", "LHX", "BA",
+            "OI", "GLW", "GPK", "OC", "5201.T", "5202.T", "VRLA.PA",
+            "BRK-B", "EXO.MI", "EXOR.AS", "IEP", "JARD.L",
         ]
     )
 )
@@ -61,6 +63,9 @@ RAKIP_ONERILERI = {
     "TUPRS.IS": ["PETKM.IS", "SHEL", "BP", "XOM", "CVX"],
     "THYAO.IS": ["PGSUS.IS", "DAL", "UAL", "AAL", "LUV", "RYAAY", "ALK", "CPA"],
     "ASELS.IS": ["LMT", "RTX", "NOC", "GD", "LHX", "BA", "AIR.PA"],
+    "SISE.IS": ["OI", "GLW", "GPK", "OC", "5201.T", "5202.T", "VRLA.PA"],
+    "KCHOL.IS": ["SAHOL.IS", "BRK-B", "EXO.MI", "EXOR.AS", "IEP", "JARD.L"],
+    "SAHOL.IS": ["KCHOL.IS", "BRK-B", "EXO.MI", "EXOR.AS", "IEP", "JARD.L"],
 }
 
 RAKIP_ANAHTAR_KELIMELERI = {
@@ -68,6 +73,9 @@ RAKIP_ANAHTAR_KELIMELERI = {
     "PGSUS.IS": ["airline", "airlines", "airport", "passenger"],
     "ASELS.IS": ["aerospace", "defense", "defence", "security"],
     "TUPRS.IS": ["oil", "gas", "refining", "refinery", "energy"],
+    "SISE.IS": ["glass", "container", "packaging", "materials", "building products"],
+    "KCHOL.IS": ["holding", "conglomerate", "diversified"],
+    "SAHOL.IS": ["holding", "conglomerate", "diversified"],
 }
 
 DONEMLER = {
@@ -399,14 +407,15 @@ def hisse_bilgisi_getir(ticker: str, period: str, interval: str) -> dict:
     hisse = yf.Ticker(ticker)
     info = hisse.info
     gecmis = hisse.history(period=period, interval=interval)
+    fk, pd_dd = guvenilir_fk_pd_dd(ticker, info)
 
     return {
         "ticker": ticker.upper(),
         "sirket_adi": info.get("longName") or info.get("shortName") or ticker.upper(),
         "guncel_fiyat": info.get("currentPrice") or info.get("regularMarketPrice"),
         "onceki_kapanis": info.get("previousClose"),
-        "fk": info.get("trailingPE"),
-        "pd_dd": info.get("priceToBook"),
+        "fk": fk,
+        "pd_dd": pd_dd,
         "temettu_verimi": info.get("dividendYield"),
         "temettu_tutari": info.get("dividendRate"),
         "payout_orani": info.get("payoutRatio"),
@@ -536,6 +545,136 @@ def oran_formatla(deger: float | None) -> str:
     return f"{deger:.2f}"
 
 
+def ilk_gecerli_deger(seri: pd.Series | None) -> float | None:
+    if seri is None:
+        return None
+    temiz = seri.dropna()
+    if temiz.empty:
+        return None
+    deger = float(temiz.iloc[0])
+    return deger if math.isfinite(deger) else None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def finansal_tablodan_oran_getir(ticker: str, piyasa_degeri: float | None) -> dict:
+    if piyasa_degeri is None or piyasa_degeri <= 0:
+        return {"fk": None, "pd_dd": None}
+
+    try:
+        hisse = yf.Ticker(ticker)
+        finansallar = hisse.financials
+        ceyreklik_finansallar = hisse.quarterly_financials
+        bilanco = hisse.balance_sheet
+    except Exception:
+        return {"fk": None, "pd_dd": None}
+
+    net_kar = None
+    for satir in ["Net Income", "Net Income Common Stockholders"]:
+        if not ceyreklik_finansallar.empty and satir in ceyreklik_finansallar.index:
+            son_ceyrekler = ceyreklik_finansallar.loc[satir].dropna().head(4)
+            if len(son_ceyrekler) >= 4:
+                ttm_net_kar = float(son_ceyrekler.sum())
+                if math.isfinite(ttm_net_kar) and ttm_net_kar > 0:
+                    net_kar = ttm_net_kar
+                    break
+
+    for satir in ["Net Income", "Net Income Common Stockholders"]:
+        if net_kar:
+            break
+        if not finansallar.empty and satir in finansallar.index:
+            net_kar = ilk_gecerli_deger(finansallar.loc[satir])
+            if net_kar:
+                break
+
+    ozkaynak = None
+    for satir in ["Stockholders Equity", "Total Stockholder Equity", "Common Stock Equity", "Total Equity Gross Minority Interest"]:
+        if not bilanco.empty and satir in bilanco.index:
+            ozkaynak = ilk_gecerli_deger(bilanco.loc[satir])
+            if ozkaynak:
+                break
+
+    return {
+        "fk": (piyasa_degeri / net_kar) if net_kar and net_kar > 0 else None,
+        "pd_dd": (piyasa_degeri / ozkaynak) if ozkaynak and ozkaynak > 0 else None,
+    }
+
+
+def pozitif_sayi(deger) -> float | None:
+    try:
+        if deger is None or pd.isna(deger):
+            return None
+        sayi = float(deger)
+        return sayi if math.isfinite(sayi) and sayi > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def tercih_edilebilir_oran(deger: float | None, ust_sinir: float) -> bool:
+    return deger is not None and 0 < deger < ust_sinir
+
+
+def oran_gecerli_mi(deger: float | None, oran_tipi: str) -> bool:
+    if deger is None or pd.isna(deger) or not math.isfinite(float(deger)):
+        return False
+    if oran_tipi in ["fk", "pd_dd"]:
+        return 0 < float(deger) < (100 if oran_tipi == "fk" else 25)
+    if oran_tipi == "temettu":
+        return 0 <= float(deger) < 5
+    return True
+
+
+def oran_temizle(deger: float | None, oran_tipi: str) -> float | None:
+    return float(deger) if oran_gecerli_mi(deger, oran_tipi) else None
+
+
+def hisse_basi_oran_hesapla(ticker: str, info: dict) -> tuple[float | None, float | None]:
+    fiyat = pozitif_sayi(info.get("currentPrice") or info.get("regularMarketPrice"))
+    eps = pozitif_sayi(info.get("trailingEps"))
+    defter_degeri = pozitif_sayi(info.get("bookValue"))
+    para_birimi = info.get("currency") or ""
+
+    if not fiyat:
+        return None, None
+
+    hesap_fiyati = fiyat
+    if ticker.upper().endswith(".IS") and para_birimi != "USD" and para_birimi in USD_CEVRIMLERI:
+        kur, _ = kur_verisi_getir(para_birimi, "5d", "1d")
+        hesap_fiyati = usd_degere_cevir(fiyat, kur, para_birimi) or fiyat
+
+    fk = hesap_fiyati / eps if eps else None
+    pd_dd = hesap_fiyati / defter_degeri if defter_degeri else None
+    return fk, pd_dd
+
+
+def guvenilir_fk_pd_dd(ticker: str, info: dict) -> tuple[float | None, float | None]:
+    raw_fk = pozitif_sayi(info.get("trailingPE"))
+    raw_pd_dd = pozitif_sayi(info.get("priceToBook"))
+    hisse_basi_fk, hisse_basi_pd_dd = hisse_basi_oran_hesapla(ticker, info)
+
+    if ticker.upper().endswith(".IS"):
+        tablo_oranlari = finansal_tablodan_oran_getir(ticker.upper(), info.get("marketCap"))
+        tablo_fk = pozitif_sayi(tablo_oranlari.get("fk"))
+        tablo_pd_dd = pozitif_sayi(tablo_oranlari.get("pd_dd"))
+
+        fk = (
+            hisse_basi_fk
+            if tercih_edilebilir_oran(hisse_basi_fk, 80)
+            else tablo_fk
+            if tercih_edilebilir_oran(tablo_fk, 80)
+            else raw_fk
+        )
+        pd_dd = (
+            hisse_basi_pd_dd
+            if tercih_edilebilir_oran(hisse_basi_pd_dd, 20)
+            else tablo_pd_dd
+            if tercih_edilebilir_oran(tablo_pd_dd, 20)
+            else raw_pd_dd
+        )
+        return fk, pd_dd
+
+    return raw_fk, raw_pd_dd
+
+
 def gecmise_ekle(ticker: str) -> None:
     ticker = ticker.upper()
     mevcut = [kod for kod in st.session_state.hisse_gecmisi if kod != ticker]
@@ -638,6 +777,7 @@ def ortalama(degerler: list[float | None]) -> float | None:
 @st.cache_data(ttl=3600, show_spinner=False)
 def temel_info_getir(ticker: str) -> dict:
     info = yf.Ticker(ticker).info
+    fk, pd_dd = guvenilir_fk_pd_dd(ticker, info)
     return {
         "ticker": ticker.upper(),
         "shortName": info.get("shortName"),
@@ -645,10 +785,10 @@ def temel_info_getir(ticker: str) -> dict:
         "sector": info.get("sector"),
         "marketCap": info.get("marketCap"),
         "currency": info.get("currency"),
-        "trailingPE": info.get("trailingPE"),
+        "trailingPE": fk,
         "currentPrice": info.get("currentPrice") or info.get("regularMarketPrice"),
         "targetMedianPrice": info.get("targetMedianPrice"),
-        "priceToBook": info.get("priceToBook"),
+        "priceToBook": pd_dd,
         "earningsGrowth": info.get("earningsGrowth"),
         "earningsQuarterlyGrowth": info.get("earningsQuarterlyGrowth"),
         "returnOnEquity": info.get("returnOnEquity"),
@@ -659,6 +799,8 @@ def temel_info_getir(ticker: str) -> dict:
         "payoutRatio": info.get("payoutRatio"),
         "exchange": info.get("exchange") or info.get("fullExchangeName") or "",
         "industry": info.get("industry"),
+        "website": info.get("website"),
+        "summary": info.get("longBusinessSummary"),
     }
 
 
@@ -713,12 +855,7 @@ def endustri_uyumlu_mu(ana_endustri: str | None, aday_endustri: str | None) -> b
     aday = metin_norm(aday_endustri)
     if not ana or not aday:
         return False
-    if ana == aday:
-        return True
-
-    ana_kelimeler = {kelime for kelime in ana.replace("&", " ").replace("-", " ").split() if len(kelime) > 3}
-    aday_kelimeler = {kelime for kelime in aday.replace("&", " ").replace("-", " ").split() if len(kelime) > 3}
-    return bool(ana_kelimeler & aday_kelimeler)
+    return ana == aday
 
 
 def anahtar_kelime_uyumlu_mu(ticker: str, aday_info: dict) -> bool:
@@ -747,7 +884,7 @@ def rakipleri_bul(
 ) -> list[dict]:
     ticker = ticker.upper()
     oneri_listesi = RAKIP_ONERILERI.get(ticker, [])
-    evren = BIST_EVRENI if ticker.endswith(".IS") else GLOBAL_EVRENI
+    evren = [] if oneri_listesi else (BIST_EVRENI if ticker.endswith(".IS") else GLOBAL_EVRENI)
     adaylar = list(dict.fromkeys(oneri_listesi + evren + GLOBAL_EVRENI + ANALIZ_EVRENI))
     rakipler = []
     ana_piyasa_degeri_usd = piyasa_degerini_usd_cevir(piyasa_degeri, para_birimi)
@@ -912,7 +1049,7 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "ticker": veri["ticker"],
         "sector": veri["sektor"],
         "marketCap": veri["piyasa_degeri"],
-        "trailingPE": veri["fk"],
+        "trailingPE": oran_temizle(veri["fk"], "fk"),
         "currentPrice": veri["guncel_fiyat"],
         "targetMedianPrice": veri["hedef_fiyat"],
         "earningsGrowth": veri["kazanc_buyumesi_yillik"],
@@ -921,7 +1058,7 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "revenueGrowth": veri["gelir_buyumesi"],
         "debtToEquity": veri["borc_ozsermaye"],
         "currentRatio": veri["cari_oran"],
-        "dividendYield": veri["temettu_verimi"],
+        "dividendYield": oran_temizle(veri["temettu_verimi"], "temettu"),
         "payoutRatio": veri["payout_orani"],
         "exchange": veri["borsa"],
         "industry": veri["endustri"],
@@ -934,6 +1071,11 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         veri["piyasa_degeri"],
         veri["para_birimi"],
     )
+    for rakip in rakipler:
+        rakip["trailingPE"] = oran_temizle(rakip.get("trailingPE"), "fk")
+        rakip["priceToBook"] = oran_temizle(rakip.get("priceToBook"), "pd_dd")
+        rakip["dividendYield"] = oran_temizle(rakip.get("dividendYield"), "temettu")
+
     peer_pe_avg = ortalama([rakip.get("trailingPE") for rakip in rakipler])
     peer_pb_avg = ortalama([rakip.get("priceToBook") for rakip in rakipler])
     peer_dividend_avg = ortalama([rakip.get("dividendYield") for rakip in rakipler])
@@ -963,6 +1105,18 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "peer_dividend_avg": peer_dividend_avg,
         "competitors": {
             "tickers": [rakip_etiketi(rakip) for rakip in rakipler],
+            "items": [
+                {
+                    "ticker": rakip_etiketi(rakip),
+                    "name": rakip.get("longName") or rakip.get("shortName") or rakip["ticker"],
+                    "website": rakip.get("website"),
+                    "summary": rakip.get("summary"),
+                    "fk": rakip.get("trailingPE"),
+                    "pd_dd": rakip.get("priceToBook"),
+                    "temettu": rakip.get("dividendYield"),
+                }
+                for rakip in rakipler
+            ],
             "averages": {
                 "fk": peer_pe_avg,
                 "pd_dd": peer_pb_avg,
@@ -975,19 +1129,56 @@ def analiz_motoru_calistir(veri: dict) -> dict:
 def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
     competitors = analiz_sonucu.get("competitors", {})
     averages = competitors.get("averages", {})
-    competitor_text = ", ".join(competitors.get("tickers", [])) or "Veri Yok"
+    competitor_items = competitors.get("items", [])[:3]
     skorlar = analiz_sonucu.get("hisse", {})
     aciklamalar = analiz_sonucu.get("aciklamalar", {})
+
+    def peer_label(peer: dict, index: int) -> str:
+        label = peer.get("ticker") or f"Rakip {index + 1}"
+        return label.split(":")[-1]
+
+    def peer_summary(peer: dict) -> str:
+        summary = peer.get("summary") or "Firma açıklaması bulunamadı."
+        return summary[:220] + ("..." if len(summary) > 220 else "")
+
+    def peer_header_html(index: int) -> str:
+        if index >= len(competitor_items):
+            return f"<div>Rakip {index + 1}</div>"
+
+        peer = competitor_items[index]
+        label = peer_label(peer, index)
+        name = peer.get("name") or label
+        website = peer.get("website")
+        website_html = (
+            f'<a href="{escape(website, quote=True)}" target="_blank" rel="noopener noreferrer">Resmi site</a>'
+            if website
+            else "<span>Web sitesi yok</span>"
+        )
+        return "".join(
+            [
+                '<div class="peer-head" tabindex="0">',
+                escape(label),
+                '<div class="peer-popover">',
+                f"<strong>{escape(name)}</strong>",
+                f"<p>{escape(peer_summary(peer))}</p>",
+                website_html,
+                "</div>",
+                "</div>",
+            ]
+        )
+
+    peer_headers = [peer_label(peer, index) for index, peer in enumerate(competitor_items)]
 
     oranlar = [
         {
             "key": "fk",
             "score_key": "Değerleme",
             "label": "F/K",
-            "value_raw": veri["fk"],
-            "value": oran_formatla(veri["fk"]),
+            "value_raw": oran_temizle(veri["fk"], "fk"),
+            "value": oran_formatla(oran_temizle(veri["fk"], "fk")),
             "peer_raw": averages.get("fk"),
             "peer": oran_formatla(averages.get("fk")),
+            "peer_values": [oran_formatla(oran_temizle(peer.get("fk"), "fk")) for peer in competitor_items],
             "meaning": "Fiyat/Kazanç oranı, yatırımcının şirket karının her 1 birimi için kaç birim fiyat ödediğini gösterir.",
             "direction": "Düşük F/K, rakiplere göre daha iskontolu değerlemeye işaret edebilir.",
         },
@@ -995,10 +1186,11 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
             "key": "pd_dd",
             "score_key": "Değerleme",
             "label": "PD/DD",
-            "value_raw": veri["pd_dd"],
-            "value": oran_formatla(veri["pd_dd"]),
+            "value_raw": oran_temizle(veri["pd_dd"], "pd_dd"),
+            "value": oran_formatla(oran_temizle(veri["pd_dd"], "pd_dd")),
             "peer_raw": averages.get("pd_dd"),
             "peer": oran_formatla(averages.get("pd_dd")),
+            "peer_values": [oran_formatla(oran_temizle(peer.get("pd_dd"), "pd_dd")) for peer in competitor_items],
             "meaning": "Piyasa Değeri/Defter Değeri oranı, şirketin özkaynaklarına göre piyasada kaç kat değer gördüğünü gösterir.",
             "direction": "Düşük PD/DD, varlık bazlı değerleme açısından daha ucuz görünebilir.",
         },
@@ -1006,10 +1198,18 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
             "key": "temettu",
             "score_key": "Temettü",
             "label": "Temettü",
-            "value_raw": veri["temettu_verimi"],
-            "value": yuzde_formatla(veri["temettu_verimi"] * 100) if veri["temettu_verimi"] is not None else "Veri yok",
+            "value_raw": oran_temizle(veri["temettu_verimi"], "temettu"),
+            "value": yuzde_formatla(oran_temizle(veri["temettu_verimi"], "temettu") * 100)
+            if oran_temizle(veri["temettu_verimi"], "temettu") is not None
+            else "Veri yok",
             "peer_raw": averages.get("temettu"),
             "peer": yuzde_formatla(averages.get("temettu") * 100) if averages.get("temettu") is not None else "Veri yok",
+            "peer_values": [
+                yuzde_formatla(oran_temizle(peer.get("temettu"), "temettu") * 100)
+                if oran_temizle(peer.get("temettu"), "temettu") is not None
+                else "Veri yok"
+                for peer in competitor_items
+            ],
             "meaning": "Temettü verimi, yıllık temettünün hisse fiyatına oranını gösterir.",
             "direction": "Yüksek temettü verimi nakit getiri potansiyeli sunar; sürdürülebilirlik için payout oranı da izlenmelidir.",
         },
@@ -1023,6 +1223,10 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
         score = skorlar.get(score_key)
         score_text = f"{score}/100" if score is not None else "Veri yok"
         score_note = aciklamalar.get(score_key, "Skor açıklaması için yeterli veri bulunamadı.")
+        peer_cells = oran["peer_values"][:3]
+        while len(peer_cells) < 3:
+            peer_cells.append("Veri yok")
+
         if value_raw is None or peer_raw is None or pd.isna(value_raw) or pd.isna(peer_raw):
             comparison = "Karşılaştırma için veri yetersiz."
             badge = "Veri Yetersiz"
@@ -1034,16 +1238,20 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
             else:
                 daha_iyi = fark > 0
                 badge = "Üstünde" if daha_iyi else "Altında"
-            comparison = f"Hisse değeri {oran['value']}; rakip ortalaması {oran['peer']}. {badge} görünüm."
+            comparison = f"Hisse değeri {oran['value']}; seçilen rakiplerin ortalaması {oran['peer']}. {badge} görünüm."
 
+        peer_text = ", ".join(peer_headers) or "Veri Yok"
         rows.append(
             "".join(
                 [
                     '<div class="ratio-row" tabindex="0">',
                     f'<div class="ratio-name">{escape(oran["label"])}</div>',
                     f'<div class="ratio-value">{escape(oran["value"])}</div>',
-                    '<div class="ratio-peer">',
-                    f'<span>{escape(oran["peer"])}</span>',
+                    f'<div class="ratio-peer-cell">{escape(peer_cells[0])}</div>',
+                    f'<div class="ratio-peer-cell">{escape(peer_cells[1])}</div>',
+                    f'<div class="ratio-peer-cell">{escape(peer_cells[2])}</div>',
+                    f'<div class="ratio-average">{escape(oran["peer"])}</div>',
+                    '<div class="ratio-note">',
                     '<span class="ratio-badge-wrap" tabindex="0">',
                     f'<span class="ratio-badge">{escape(badge)}</span>',
                     '<div class="ratio-popover">',
@@ -1053,7 +1261,7 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
                     f"<p>{escape(oran['direction'])}</p>",
                     f"<p><strong>{escape(score_key)} skoru:</strong> {escape(score_text)}</p>",
                     f"<p>{escape(score_note)}</p>",
-                    f"<small>Rakipler: {escape(competitor_text)}</small>",
+                    f"<small>Rakipler: {escape(peer_text)}</small>",
                     "</div>",
                     "</span>",
                     "</div>",
@@ -1076,24 +1284,80 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
             .ratio-head,
             .ratio-row {{
                 display: grid;
-                grid-template-columns: minmax(90px, 0.65fr) minmax(110px, 0.75fr) minmax(160px, 1.1fr);
-                gap: 0.75rem;
+                grid-template-columns:
+                    minmax(78px, 0.75fr)
+                    minmax(84px, 0.78fr)
+                    repeat(3, minmax(82px, 0.78fr))
+                    minmax(82px, 0.78fr)
+                    minmax(96px, 0.9fr);
+                gap: 0.65rem;
                 align-items: center;
                 padding: 0.85rem 1rem;
             }}
 
             .ratio-head {{
                 color: #cbd5e1;
-                font-size: 0.82rem;
+                font-size: 0.78rem;
                 font-weight: 800;
                 background: rgba(248, 250, 252, 0.06);
                 border-bottom: 1px solid rgba(148, 163, 184, 0.18);
             }}
 
+            .peer-head {{
+                position: relative;
+                display: inline-flex;
+                width: fit-content;
+                max-width: 100%;
+                color: #dbeafe;
+                border-bottom: 1px dotted rgba(219, 234, 254, 0.7);
+                cursor: help;
+                outline: none;
+            }}
+
+            .peer-popover {{
+                display: none;
+                position: absolute;
+                z-index: 35;
+                left: 0;
+                top: calc(100% + 0.45rem);
+                width: min(340px, 72vw);
+                padding: 0.9rem;
+                background: #f8fafc;
+                color: #0f172a;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
+            }}
+
+            .peer-popover strong {{
+                display: block;
+                margin-bottom: 0.35rem;
+                color: #0f172a;
+            }}
+
+            .peer-popover p {{
+                margin: 0 0 0.55rem 0;
+                color: #334155;
+                line-height: 1.42;
+                font-size: 0.86rem;
+            }}
+
+            .peer-popover a,
+            .peer-popover span {{
+                color: #0369a1;
+                font-weight: 800;
+                text-decoration: none;
+            }}
+
+            .peer-head:hover .peer-popover,
+            .peer-head:focus .peer-popover,
+            .peer-head:focus-within .peer-popover {{
+                display: block;
+            }}
+
             .ratio-row {{
                 position: relative;
                 border-bottom: 1px solid rgba(148, 163, 184, 0.14);
-                cursor: help;
             }}
 
             .ratio-row:last-child {{ border-bottom: 0; }}
@@ -1104,23 +1368,24 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
                 outline: none;
             }}
 
-            .ratio-name {{
+            .ratio-name,
+            .ratio-value,
+            .ratio-peer-cell,
+            .ratio-average {{
                 color: #f8fafc;
                 font-weight: 800;
             }}
 
-            .ratio-value {{
-                color: #f8fafc;
-                font-weight: 700;
+            .ratio-peer-cell,
+            .ratio-average {{
+                color: #dbeafe;
+                font-size: 0.92rem;
             }}
 
-            .ratio-peer {{
-                color: #f8fafc;
-                font-weight: 700;
+            .ratio-note {{
                 display: flex;
+                justify-content: center;
                 align-items: center;
-                justify-content: space-between;
-                gap: 0.75rem;
             }}
 
             .ratio-badge-wrap {{
@@ -1146,7 +1411,7 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
                 right: 0;
                 top: 50%;
                 transform: translateY(-50%);
-                width: min(360px, 82vw);
+                width: min(390px, 82vw);
                 padding: 0.9rem;
                 background: #f8fafc;
                 color: #0f172a;
@@ -1179,24 +1444,15 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
                 display: block;
             }}
 
-            .ratio-foot {{
-                color: #94a3b8;
-                font-size: 0.78rem;
-                font-weight: 700;
-                padding: 0.7rem 1rem 0.85rem;
-                border-top: 1px solid rgba(148, 163, 184, 0.12);
-            }}
-
             @media (max-width: 768px) {{
-                .ratio-head,
-                .ratio-row {{
-                    grid-template-columns: 0.85fr 1fr;
-                    padding: 0.75rem;
+                .ratio-card {{
+                    overflow-x: auto;
                 }}
 
-                .ratio-head div:nth-child(3),
-                .ratio-peer {{
-                    grid-column: 1 / -1;
+                .ratio-head,
+                .ratio-row {{
+                    min-width: 760px;
+                    padding: 0.75rem;
                 }}
 
                 .ratio-popover {{
@@ -1211,10 +1467,13 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
             <div class="ratio-head">
                 <div>Oran</div>
                 <div>Hisse</div>
-                <div>Rakip Ort.</div>
+                {peer_header_html(0)}
+                {peer_header_html(1)}
+                {peer_header_html(2)}
+                <div>Ort.</div>
+                <div>Durum</div>
             </div>
             {''.join(rows)}
-            <div class="ratio-foot">Kıyaslanan rakipler: {escape(competitor_text)}</div>
         </div>
         """
     )

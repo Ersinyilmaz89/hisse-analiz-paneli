@@ -603,11 +603,17 @@ def grafik_olustur(grafik_serisi: pd.Series, para_birimi: str, yukseklik: int) -
 
 
 def puan_sinirla(deger: float) -> int:
+    if deger is None or pd.isna(deger) or not math.isfinite(float(deger)):
+        return 0
     return int(max(0, min(100, round(deger))))
 
 
 def ortalama(degerler: list[float | None]) -> float | None:
-    temiz = [float(deger) for deger in degerler if deger is not None]
+    temiz = [
+        float(deger)
+        for deger in degerler
+        if deger is not None and not pd.isna(deger) and math.isfinite(float(deger))
+    ]
     if not temiz:
         return None
     return sum(temiz) / len(temiz)
@@ -721,11 +727,11 @@ def rakipleri_bul(ticker: str, sektor: str | None, endustri: str | None, piyasa_
             item["market_cap_distance"],
         ),
     )
-    return rakipler[:5]
+    return rakipler[:3]
 
 
 def eksik_mi(*degerler) -> bool:
-    return any(deger is None for deger in degerler)
+    return any(deger is None or pd.isna(deger) for deger in degerler)
 
 
 def hisse_puanla(

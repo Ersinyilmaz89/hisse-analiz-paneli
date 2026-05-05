@@ -1,6 +1,8 @@
 import json
 import math
 import sqlite3
+import textwrap
+from html import escape
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -629,6 +631,7 @@ def temel_info_getir(ticker: str) -> dict:
         "trailingPE": info.get("trailingPE"),
         "currentPrice": info.get("currentPrice") or info.get("regularMarketPrice"),
         "targetMedianPrice": info.get("targetMedianPrice"),
+        "priceToBook": info.get("priceToBook"),
         "earningsGrowth": info.get("earningsGrowth"),
         "earningsQuarterlyGrowth": info.get("earningsQuarterlyGrowth"),
         "returnOnEquity": info.get("returnOnEquity"),
@@ -860,6 +863,7 @@ def analiz_motoru_calistir(veri: dict) -> dict:
     }
     rakipler = rakipleri_bul(veri["ticker"], veri["sektor"], veri["endustri"], veri["piyasa_degeri"])
     peer_pe_avg = ortalama([rakip.get("trailingPE") for rakip in rakipler])
+    peer_pb_avg = ortalama([rakip.get("priceToBook") for rakip in rakipler])
     peer_dividend_avg = ortalama([rakip.get("dividendYield") for rakip in rakipler])
     ana_gecmis = bes_yillik_gecmis_ortalamalari(veri["ticker"])
     hisse_puanlari, eksikler, aciklamalar = hisse_puanla(
@@ -883,7 +887,16 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "eksikler": eksik_kriterleri_birlestir(eksikler),
         "aciklamalar": aciklamalar,
         "peer_pe_avg": peer_pe_avg,
+        "peer_pb_avg": peer_pb_avg,
         "peer_dividend_avg": peer_dividend_avg,
+        "competitors": {
+            "tickers": [rakip_etiketi(rakip) for rakip in rakipler],
+            "averages": {
+                "fk": peer_pe_avg,
+                "pd_dd": peer_pb_avg,
+                "temettu": peer_dividend_avg,
+            },
+        },
     }
 
 
@@ -953,6 +966,213 @@ def radar_chart_olustur(puanlar: dict[str, int], referans_puanlar: dict[str, int
         font={"color": "#f8fafc"},
     )
     return fig
+
+
+def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
+    averages = competitors.get("averages", {})
+    competitor_text = ", ".join(competitors.get("tickers", [])) or "Veri Yok"
+
+    oranlar = [
+        {
+            "key": "fk",
+            "label": "F/K",
+            "value_raw": veri["fk"],
+            "value": oran_formatla(veri["fk"]),
+            "peer_raw": averages.get("fk"),
+            "peer": oran_formatla(averages.get("fk")),
+            "meaning": "Fiyat/Kazanç oranı, yatırımcının şirket karının her 1 birimi için kaç birim fiyat ödediğini gösterir.",
+            "direction": "Düşük F/K, rakiplere göre daha iskontolu değerlemeye işaret edebilir.",
+        },
+        {
+            "key": "pd_dd",
+            "label": "PD/DD",
+            "value_raw": veri["pd_dd"],
+            "value": oran_formatla(veri["pd_dd"]),
+            "peer_raw": averages.get("pd_dd"),
+            "peer": oran_formatla(averages.get("pd_dd")),
+            "meaning": "Piyasa Değeri/Defter Değeri oranı, şirketin özkaynaklarına göre piyasada kaç kat değer gördüğünü gösterir.",
+            "direction": "Düşük PD/DD, varlık bazlı değerleme açısından daha ucuz görünebilir.",
+        },
+        {
+            "key": "temettu",
+            "label": "Temettü",
+            "value_raw": veri["temettu_verimi"],
+            "value": yuzde_formatla(veri["temettu_verimi"] * 100) if veri["temettu_verimi"] is not None else "Veri yok",
+            "peer_raw": averages.get("temettu"),
+            "peer": yuzde_formatla(averages.get("temettu") * 100) if averages.get("temettu") is not None else "Veri yok",
+            "meaning": "Temettü verimi, yıllık temettünün hisse fiyatına oranını gösterir.",
+            "direction": "Yüksek temettü verimi nakit getiri potansiyeli sunar; sürdürülebilirlik için payout oranı da izlenmelidir.",
+        },
+    ]
+
+    rows = []
+    for oran in oranlar:
+        value_raw = oran["value_raw"]
+        peer_raw = oran["peer_raw"]
+        if value_raw is None or peer_raw is None or pd.isna(value_raw) or pd.isna(peer_raw):
+            comparison = "Karşılaştırma için veri yetersiz."
+            badge = "Veri Yetersiz"
+        else:
+            fark = float(value_raw) - float(peer_raw)
+            if oran["key"] in ["fk", "pd_dd"]:
+                daha_iyi = fark < 0
+                badge = "İskontolu" if daha_iyi else "Primli"
+            else:
+                daha_iyi = fark > 0
+                badge = "Üstünde" if daha_iyi else "Altında"
+            comparison = f"Hisse değeri {oran['value']}; rakip ortalaması {oran['peer']}. {badge} görünüm."
+
+        rows.append(
+            "".join(
+                [
+                    '<div class="ratio-row" tabindex="0">',
+                    f'<div class="ratio-name">{escape(oran["label"])}</div>',
+                    '<div class="ratio-value">',
+                    escape(oran["value"]),
+                    f'<span class="ratio-badge">{escape(badge)}</span>',
+                    "</div>",
+                    '<div class="ratio-popover">',
+                    f'<strong>{escape(oran["label"])}</strong>',
+                    f"<p>{escape(oran['meaning'])}</p>",
+                    f"<p>{escape(comparison)}</p>",
+                    f"<p>{escape(oran['direction'])}</p>",
+                    f"<small>Rakipler: {escape(competitor_text)}</small>",
+                    "</div>",
+                    "</div>",
+                ]
+            )
+        )
+
+    html = textwrap.dedent(
+        f"""
+        <style>
+            .ratio-card {{
+                background: rgba(15, 23, 42, 0.72);
+                border: 1px solid rgba(148, 163, 184, 0.24);
+                border-radius: 8px;
+                overflow: visible;
+                margin-top: 0.5rem;
+            }}
+
+            .ratio-head,
+            .ratio-row {{
+                display: grid;
+                grid-template-columns: minmax(96px, 0.7fr) minmax(140px, 1fr);
+                gap: 0.75rem;
+                align-items: center;
+                padding: 0.85rem 1rem;
+            }}
+
+            .ratio-head {{
+                color: #cbd5e1;
+                font-size: 0.82rem;
+                font-weight: 800;
+                background: rgba(248, 250, 252, 0.06);
+                border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+            }}
+
+            .ratio-row {{
+                position: relative;
+                border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+                cursor: help;
+            }}
+
+            .ratio-row:last-child {{ border-bottom: 0; }}
+
+            .ratio-row:hover,
+            .ratio-row:focus {{
+                background: rgba(56, 189, 248, 0.08);
+                outline: none;
+            }}
+
+            .ratio-name {{
+                color: #f8fafc;
+                font-weight: 800;
+            }}
+
+            .ratio-value {{
+                color: #f8fafc;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 0.75rem;
+            }}
+
+            .ratio-badge {{
+                font-size: 0.72rem;
+                color: #0f172a;
+                background: #f8fafc;
+                border-radius: 999px;
+                padding: 0.18rem 0.5rem;
+                white-space: nowrap;
+            }}
+
+            .ratio-popover {{
+                display: none;
+                position: absolute;
+                z-index: 30;
+                left: min(52%, 280px);
+                top: 50%;
+                transform: translateY(-50%);
+                width: min(360px, 82vw);
+                padding: 0.9rem;
+                background: #f8fafc;
+                color: #0f172a;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
+            }}
+
+            .ratio-popover strong {{
+                display: block;
+                margin-bottom: 0.35rem;
+                color: #0f172a;
+            }}
+
+            .ratio-popover p {{
+                margin: 0 0 0.45rem 0;
+                color: #334155;
+                line-height: 1.42;
+                font-size: 0.88rem;
+            }}
+
+            .ratio-popover small {{
+                color: #64748b;
+                font-weight: 700;
+            }}
+
+            .ratio-row:hover .ratio-popover,
+            .ratio-row:focus .ratio-popover {{
+                display: block;
+            }}
+
+            @media (max-width: 768px) {{
+                .ratio-head,
+                .ratio-row {{
+                    grid-template-columns: 0.8fr 1fr;
+                    padding: 0.75rem;
+                }}
+
+                .ratio-popover {{
+                    left: 0.5rem;
+                    right: 0.5rem;
+                    top: calc(100% + 0.35rem);
+                    transform: none;
+                    width: auto;
+                }}
+            }}
+        </style>
+        <div class="ratio-card">
+            <div class="ratio-head">
+                <div>Oran</div>
+                <div>Değer</div>
+            </div>
+            {''.join(rows)}
+        </div>
+        """
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 with st.sidebar:
@@ -1140,24 +1360,20 @@ finansal_oranlar = pd.DataFrame(
         {
             "Oran": "F/K",
             "Değer": oran_formatla(veri["fk"]),
-            "Açıklama": "Hisse fiyatının hisse başına kara bölünmesi.",
         },
         {
             "Oran": "PD/DD",
             "Değer": oran_formatla(veri["pd_dd"]),
-            "Açıklama": "Piyasa değerinin defter değerine oranı.",
         },
         {
             "Oran": "Temettü Verimi",
             "Değer": yuzde_formatla(veri["temettu_verimi"] * 100)
             if veri["temettu_verimi"] is not None
             else "Veri yok",
-            "Açıklama": "Yıllık temettünün hisse fiyatına oranıdır. Para birimi değişse de yüzde oran aynı kalır.",
         },
         {
             "Oran": "Yıllık Temettü",
             "Değer": sayi_formatla(temettu_tutari, gosterim_para_birimi),
-            "Açıklama": "Yahoo Finance tarafından bildirilen yıllık hisse başı temettü tutarı.",
         },
     ]
 )
@@ -1174,14 +1390,7 @@ st.plotly_chart(
 )
 
 st.markdown("### Finansal Oranlar")
-if mobil_gorunum:
-    for oran in finansal_oranlar.to_dict("records"):
-        with st.container(border=True):
-            st.markdown(f"**{oran['Oran']}**")
-            st.metric("Değer", oran["Değer"])
-            st.caption(oran["Açıklama"])
-else:
-    st.dataframe(finansal_oranlar, hide_index=True, use_container_width=True)
+finansal_oran_bileseni(veri, analiz_sonucu["competitors"])
 
 
 with st.sidebar:

@@ -45,6 +45,8 @@ ANALIZ_EVRENI = sorted(
             "NFLX", "DIS", "PYPL", "SHOP", "UBER", "ABNB", "JPM",
             "BAC", "WFC", "GS", "V", "MA", "XOM", "CVX", "SHEL",
             "BP", "KO", "PEP", "WMT", "COST", "HD", "NKE", "MCD",
+            "DAL", "UAL", "AAL", "LUV", "RYAAY", "ALK", "CPA", "IAG.L",
+            "AIR.PA", "LHA.DE", "LMT", "RTX", "NOC", "GD", "LHX", "BA",
         ]
     )
 )
@@ -56,9 +58,16 @@ RAKIP_ONERILERI = {
     "AAPL": ["MSFT", "NVDA", "GOOGL", "META", "AMZN"],
     "MSFT": ["AAPL", "NVDA", "GOOGL", "ORCL", "ADBE"],
     "GOOGL": ["META", "AMZN", "MSFT", "AAPL", "NFLX"],
-    "TUPRS.IS": ["PETKM.IS", "SASA.IS", "EREGL.IS", "KRDMD.IS", "FROTO.IS"],
-    "THYAO.IS": ["PGSUS.IS", "TAVHL.IS", "DOAS.IS", "FROTO.IS", "TOASO.IS"],
-    "ASELS.IS": ["KONTR.IS", "MIATK.IS", "PATEK.IS", "ASTOR.IS", "CWENE.IS"],
+    "TUPRS.IS": ["PETKM.IS", "SHEL", "BP", "XOM", "CVX"],
+    "THYAO.IS": ["PGSUS.IS", "DAL", "UAL", "AAL", "LUV", "RYAAY", "ALK", "CPA"],
+    "ASELS.IS": ["LMT", "RTX", "NOC", "GD", "LHX", "BA", "AIR.PA"],
+}
+
+RAKIP_ANAHTAR_KELIMELERI = {
+    "THYAO.IS": ["airline", "airlines", "airport", "passenger"],
+    "PGSUS.IS": ["airline", "airlines", "airport", "passenger"],
+    "ASELS.IS": ["aerospace", "defense", "defence", "security"],
+    "TUPRS.IS": ["oil", "gas", "refining", "refinery", "energy"],
 }
 
 DONEMLER = {
@@ -484,6 +493,18 @@ def usd_degere_cevir(deger: float | None, kur: float | None, para_birimi: str) -
     return deger
 
 
+def piyasa_degerini_usd_cevir(piyasa_degeri: float | None, para_birimi: str | None) -> float | None:
+    if piyasa_degeri is None:
+        return None
+    if not para_birimi or para_birimi == "USD":
+        return piyasa_degeri
+    if para_birimi not in USD_CEVRIMLERI:
+        return piyasa_degeri
+
+    kur, _ = kur_verisi_getir(para_birimi, "5d", "1d")
+    return usd_degere_cevir(float(piyasa_degeri), kur, para_birimi)
+
+
 def usd_seriye_cevir(seri: pd.Series, kur_serisi: pd.Series | None, para_birimi: str) -> pd.Series:
     if kur_serisi is None or kur_serisi.empty:
         return seri
@@ -619,8 +640,11 @@ def temel_info_getir(ticker: str) -> dict:
     info = yf.Ticker(ticker).info
     return {
         "ticker": ticker.upper(),
+        "shortName": info.get("shortName"),
+        "longName": info.get("longName"),
         "sector": info.get("sector"),
         "marketCap": info.get("marketCap"),
+        "currency": info.get("currency"),
         "trailingPE": info.get("trailingPE"),
         "currentPrice": info.get("currentPrice") or info.get("regularMarketPrice"),
         "targetMedianPrice": info.get("targetMedianPrice"),
@@ -680,12 +704,53 @@ def rakip_etiketi(info: dict) -> str:
     return f"{borsa}:{info['ticker']}"
 
 
+def metin_norm(metin: str | None) -> str:
+    return (metin or "").strip().lower()
+
+
+def endustri_uyumlu_mu(ana_endustri: str | None, aday_endustri: str | None) -> bool:
+    ana = metin_norm(ana_endustri)
+    aday = metin_norm(aday_endustri)
+    if not ana or not aday:
+        return False
+    if ana == aday:
+        return True
+
+    ana_kelimeler = {kelime for kelime in ana.replace("&", " ").replace("-", " ").split() if len(kelime) > 3}
+    aday_kelimeler = {kelime for kelime in aday.replace("&", " ").replace("-", " ").split() if len(kelime) > 3}
+    return bool(ana_kelimeler & aday_kelimeler)
+
+
+def anahtar_kelime_uyumlu_mu(ticker: str, aday_info: dict) -> bool:
+    anahtarlar = RAKIP_ANAHTAR_KELIMELERI.get(ticker.upper())
+    if not anahtarlar:
+        return True
+
+    metin = " ".join(
+        [
+            metin_norm(aday_info.get("industry")),
+            metin_norm(aday_info.get("sector")),
+            metin_norm(aday_info.get("shortName")),
+            metin_norm(aday_info.get("longName")),
+        ]
+    )
+    return any(anahtar in metin for anahtar in anahtarlar)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def rakipleri_bul(ticker: str, sektor: str | None, endustri: str | None, piyasa_degeri: float | None) -> list[dict]:
+def rakipleri_bul(
+    ticker: str,
+    sektor: str | None,
+    endustri: str | None,
+    piyasa_degeri: float | None,
+    para_birimi: str | None,
+) -> list[dict]:
     ticker = ticker.upper()
+    oneri_listesi = RAKIP_ONERILERI.get(ticker, [])
     evren = BIST_EVRENI if ticker.endswith(".IS") else GLOBAL_EVRENI
-    adaylar = list(dict.fromkeys(RAKIP_ONERILERI.get(ticker, []) + evren + ANALIZ_EVRENI))
+    adaylar = list(dict.fromkeys(oneri_listesi + evren + GLOBAL_EVRENI + ANALIZ_EVRENI))
     rakipler = []
+    ana_piyasa_degeri_usd = piyasa_degerini_usd_cevir(piyasa_degeri, para_birimi)
 
     for aday in adaylar:
         if aday == ticker:
@@ -700,27 +765,34 @@ def rakipleri_bul(ticker: str, sektor: str | None, endustri: str | None, piyasa_
         aday_piyasa_degeri = info.get("marketCap")
         if not aday_piyasa_degeri:
             continue
+        aday_piyasa_degeri_usd = piyasa_degerini_usd_cevir(aday_piyasa_degeri, info.get("currency"))
 
-        sektor_uyumu = sektor and aday_sektor and aday_sektor.lower() == sektor.lower()
-        endustri_uyumu = endustri and aday_endustri and aday_endustri.lower() == endustri.lower()
-        oneri_uyumu = aday in RAKIP_ONERILERI.get(ticker, [])
-        if not sektor_uyumu and not endustri_uyumu and not oneri_uyumu:
+        sektor_uyumu = metin_norm(sektor) and metin_norm(aday_sektor) == metin_norm(sektor)
+        endustri_uyumu = endustri_uyumlu_mu(endustri, aday_endustri)
+        oneri_uyumu = aday in oneri_listesi
+        if not endustri_uyumu and not oneri_uyumu:
+            continue
+        if not anahtar_kelime_uyumlu_mu(ticker, info):
             continue
 
-        if piyasa_degeri and aday_piyasa_degeri and piyasa_degeri > 0 and aday_piyasa_degeri > 0:
-            yakinlik = abs(math.log(aday_piyasa_degeri / piyasa_degeri))
+        if ana_piyasa_degeri_usd and aday_piyasa_degeri_usd and ana_piyasa_degeri_usd > 0 and aday_piyasa_degeri_usd > 0:
+            yakinlik = abs(math.log(aday_piyasa_degeri_usd / ana_piyasa_degeri_usd))
         else:
             yakinlik = 99
         info["market_cap_distance"] = yakinlik
-        info["peer_rank_market_cap"] = aday_piyasa_degeri
+        info["peer_rank_market_cap"] = aday_piyasa_degeri_usd or aday_piyasa_degeri
+        info["peer_rank_industry"] = 0 if endustri_uyumu else 1
+        info["peer_rank_recommended"] = 0 if oneri_uyumu else 1
+        info["peer_rank_sector"] = 0 if sektor_uyumu else 1
         rakipler.append(info)
 
     rakipler = sorted(
         rakipler,
         key=lambda item: (
-            0 if item.get("industry", "").lower() == (endustri or "").lower() else 1,
-            -item.get("peer_rank_market_cap", 0),
+            item["peer_rank_industry"],
+            item["peer_rank_recommended"],
             item["market_cap_distance"],
+            -item.get("peer_rank_market_cap", 0),
         ),
     )
     return rakipler[:3]
@@ -853,8 +925,15 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "payoutRatio": veri["payout_orani"],
         "exchange": veri["borsa"],
         "industry": veri["endustri"],
+        "currency": veri["para_birimi"],
     }
-    rakipler = rakipleri_bul(veri["ticker"], veri["sektor"], veri["endustri"], veri["piyasa_degeri"])
+    rakipler = rakipleri_bul(
+        veri["ticker"],
+        veri["sektor"],
+        veri["endustri"],
+        veri["piyasa_degeri"],
+        veri["para_birimi"],
+    )
     peer_pe_avg = ortalama([rakip.get("trailingPE") for rakip in rakipler])
     peer_pb_avg = ortalama([rakip.get("priceToBook") for rakip in rakipler])
     peer_dividend_avg = ortalama([rakip.get("dividendYield") for rakip in rakipler])
@@ -1237,16 +1316,9 @@ if gecmis.empty:
 
 para_birimi = veri["para_birimi"] or ""
 usd_destekli = para_birimi in USD_CEVRIMLERI
-usd_modu = False
+usd_modu = bool(para_birimi and para_birimi != "USD" and usd_destekli)
 kur = None
 kur_serisi = None
-
-if para_birimi and para_birimi != "USD" and usd_destekli:
-    usd_modu = st.toggle(
-        "USD bazında hesapla",
-        value=False,
-        help="Fiyat ve grafik değerlerini ilgili kurla USD'ye çevirir. F/K ve PD/DD gibi oranlar yapısı gereği değişmez.",
-    )
 
 if usd_modu:
     kur, kur_serisi = kur_verisi_getir(
@@ -1257,6 +1329,8 @@ if usd_modu:
     if kur is None:
         st.warning("USD dönüşümü için kur verisi alınamadı; değerler yerel para biriminde gösteriliyor.")
         usd_modu = False
+elif para_birimi and para_birimi != "USD":
+    st.caption(f"{para_birimi} için otomatik USD dönüşümü desteklenmediği için değerler yerel para biriminde gösteriliyor.")
 
 
 guncel_fiyat = veri["guncel_fiyat"]

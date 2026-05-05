@@ -83,7 +83,7 @@ USD_CEVRIMLERI = {
 }
 
 DB_PATH = Path("data") / "profiles.db"
-DEMO_PROFILLER = ["Joker1", "Joker2"]
+DEFAULT_PROFILE = "local"
 
 
 st.markdown(
@@ -317,9 +317,6 @@ if "hisse_gecmisi" not in st.session_state:
 if "favoriler" not in st.session_state:
     st.session_state.favoriler = []
 
-if "profil_email" not in st.session_state:
-    st.session_state.profil_email = DEMO_PROFILLER[0]
-
 if "aktif_profil" not in st.session_state:
     st.session_state.aktif_profil = None
 
@@ -331,10 +328,6 @@ if "ticker_secimi_bekleyen" not in st.session_state:
 
 if "sirket_ozeti_goster" not in st.session_state:
     st.session_state.sirket_ozeti_goster = True
-
-if "Ref_List" not in st.session_state:
-    st.session_state.Ref_List = []
-
 
 def db_baglan() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
@@ -386,7 +379,7 @@ def favori_sil(profile_email: str, ticker: str) -> None:
 
 
 def profil_senkronize() -> None:
-    profil = (st.session_state.profil_email or DEMO_PROFILLER[0]).strip().lower()
+    profil = DEFAULT_PROFILE
     if st.session_state.aktif_profil != profil:
         st.session_state.aktif_profil = profil
         st.session_state.favoriler = favorileri_yukle(profil)
@@ -530,7 +523,7 @@ def gecmise_ekle(ticker: str) -> None:
 
 def favori_degistir(ticker: str) -> None:
     ticker = ticker.upper()
-    profil = st.session_state.aktif_profil or DEMO_PROFILLER[0].lower()
+    profil = st.session_state.aktif_profil or DEFAULT_PROFILE
     if ticker in st.session_state.favoriler:
         st.session_state.favoriler = [
             kod for kod in st.session_state.favoriler if kod != ticker
@@ -900,81 +893,17 @@ def analiz_motoru_calistir(veri: dict) -> dict:
     }
 
 
-def radar_chart_olustur(puanlar: dict[str, int], referans_puanlar: dict[str, int], rakipler: list[str], mobil: bool) -> go.Figure:
-    kategoriler = list(puanlar.keys())
-    degerler = list(puanlar.values())
-    referans_degerler = [referans_puanlar.get(kategori, 0) for kategori in kategoriler]
-    kapali_kategoriler = [*kategoriler, kategoriler[0]]
-    kapali_degerler = [*degerler, degerler[0]]
-    kapali_referans_degerler = [*referans_degerler, referans_degerler[0]]
-    rakip_metni = f"Kıyaslanan Rakipler: {', '.join(rakipler) if rakipler else 'Veri Yok'}"
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatterpolar(
-            r=kapali_referans_degerler,
-            theta=kapali_kategoriler,
-            fill="toself",
-            fillcolor="rgba(56, 189, 248, 0.16)",
-            line={"color": "rgba(56, 189, 248, 0.72)", "width": 2},
-            name="Referans",
-            customdata=[rakip_metni] * len(kapali_kategoriler),
-            hovertemplate="%{customdata}<br>%{theta}: %{r}<extra></extra>",
-        )
-    )
-    fig.add_trace(
-        go.Scatterpolar(
-            r=kapali_degerler,
-            theta=kapali_kategoriler,
-            fill="toself",
-            fillcolor="rgba(255, 70, 85, 0.28)",
-            line={"color": "#ff4655", "width": 3},
-            marker={"size": 7, "color": "#ffffff", "line": {"color": "#ff4655", "width": 2}},
-            name="Hisse",
-            hovertemplate="%{theta}: %{r}<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        height=340 if mobil else 420,
-        margin={"l": 10, "r": 10, "t": 16, "b": 16},
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=True,
-        legend={
-            "orientation": "h",
-            "yanchor": "bottom",
-            "y": 1.03,
-            "xanchor": "right",
-            "x": 1,
-            "font": {"color": "#f8fafc"},
-        },
-        polar={
-            "bgcolor": "rgba(15, 23, 42, 0.46)",
-            "radialaxis": {
-                "visible": False,
-                "range": [0, 100],
-                "showticklabels": False,
-                "showline": False,
-                "gridcolor": "rgba(148, 163, 184, 0.18)",
-            },
-            "angularaxis": {
-                "showline": False,
-                "gridcolor": "rgba(148, 163, 184, 0.18)",
-                "tickfont": {"color": "#f8fafc", "size": 13},
-            },
-        },
-        font={"color": "#f8fafc"},
-    )
-    return fig
-
-
-def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
+def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
+    competitors = analiz_sonucu.get("competitors", {})
     averages = competitors.get("averages", {})
     competitor_text = ", ".join(competitors.get("tickers", [])) or "Veri Yok"
+    skorlar = analiz_sonucu.get("hisse", {})
+    aciklamalar = analiz_sonucu.get("aciklamalar", {})
 
     oranlar = [
         {
             "key": "fk",
+            "score_key": "Değerleme",
             "label": "F/K",
             "value_raw": veri["fk"],
             "value": oran_formatla(veri["fk"]),
@@ -985,6 +914,7 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
         },
         {
             "key": "pd_dd",
+            "score_key": "Değerleme",
             "label": "PD/DD",
             "value_raw": veri["pd_dd"],
             "value": oran_formatla(veri["pd_dd"]),
@@ -995,6 +925,7 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
         },
         {
             "key": "temettu",
+            "score_key": "Temettü",
             "label": "Temettü",
             "value_raw": veri["temettu_verimi"],
             "value": yuzde_formatla(veri["temettu_verimi"] * 100) if veri["temettu_verimi"] is not None else "Veri yok",
@@ -1009,6 +940,10 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
     for oran in oranlar:
         value_raw = oran["value_raw"]
         peer_raw = oran["peer_raw"]
+        score_key = oran["score_key"]
+        score = skorlar.get(score_key)
+        score_text = f"{score}/100" if score is not None else "Veri yok"
+        score_note = aciklamalar.get(score_key, "Skor açıklaması için yeterli veri bulunamadı.")
         if value_raw is None or peer_raw is None or pd.isna(value_raw) or pd.isna(peer_raw):
             comparison = "Karşılaştırma için veri yetersiz."
             badge = "Veri Yetersiz"
@@ -1027,16 +962,21 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
                 [
                     '<div class="ratio-row" tabindex="0">',
                     f'<div class="ratio-name">{escape(oran["label"])}</div>',
-                    '<div class="ratio-value">',
-                    escape(oran["value"]),
+                    f'<div class="ratio-value">{escape(oran["value"])}</div>',
+                    '<div class="ratio-peer">',
+                    f'<span>{escape(oran["peer"])}</span>',
+                    '<span class="ratio-badge-wrap" tabindex="0">',
                     f'<span class="ratio-badge">{escape(badge)}</span>',
-                    "</div>",
                     '<div class="ratio-popover">',
-                    f'<strong>{escape(oran["label"])}</strong>',
+                    f'<strong>{escape(oran["label"])} - {escape(badge)}</strong>',
                     f"<p>{escape(oran['meaning'])}</p>",
                     f"<p>{escape(comparison)}</p>",
                     f"<p>{escape(oran['direction'])}</p>",
+                    f"<p><strong>{escape(score_key)} skoru:</strong> {escape(score_text)}</p>",
+                    f"<p>{escape(score_note)}</p>",
                     f"<small>Rakipler: {escape(competitor_text)}</small>",
+                    "</div>",
+                    "</span>",
                     "</div>",
                     "</div>",
                 ]
@@ -1057,7 +997,7 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
             .ratio-head,
             .ratio-row {{
                 display: grid;
-                grid-template-columns: minmax(96px, 0.7fr) minmax(140px, 1fr);
+                grid-template-columns: minmax(90px, 0.65fr) minmax(110px, 0.75fr) minmax(160px, 1.1fr);
                 gap: 0.75rem;
                 align-items: center;
                 padding: 0.85rem 1rem;
@@ -1093,10 +1033,22 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
             .ratio-value {{
                 color: #f8fafc;
                 font-weight: 700;
+            }}
+
+            .ratio-peer {{
+                color: #f8fafc;
+                font-weight: 700;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 gap: 0.75rem;
+            }}
+
+            .ratio-badge-wrap {{
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+                outline: none;
             }}
 
             .ratio-badge {{
@@ -1112,7 +1064,7 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
                 display: none;
                 position: absolute;
                 z-index: 30;
-                left: min(52%, 280px);
+                right: 0;
                 top: 50%;
                 transform: translateY(-50%);
                 width: min(360px, 82vw);
@@ -1142,21 +1094,34 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
                 font-weight: 700;
             }}
 
-            .ratio-row:hover .ratio-popover,
-            .ratio-row:focus .ratio-popover {{
+            .ratio-badge-wrap:hover .ratio-popover,
+            .ratio-badge-wrap:focus .ratio-popover,
+            .ratio-badge-wrap:focus-within .ratio-popover {{
                 display: block;
+            }}
+
+            .ratio-foot {{
+                color: #94a3b8;
+                font-size: 0.78rem;
+                font-weight: 700;
+                padding: 0.7rem 1rem 0.85rem;
+                border-top: 1px solid rgba(148, 163, 184, 0.12);
             }}
 
             @media (max-width: 768px) {{
                 .ratio-head,
                 .ratio-row {{
-                    grid-template-columns: 0.8fr 1fr;
+                    grid-template-columns: 0.85fr 1fr;
                     padding: 0.75rem;
                 }}
 
+                .ratio-head div:nth-child(3),
+                .ratio-peer {{
+                    grid-column: 1 / -1;
+                }}
+
                 .ratio-popover {{
-                    left: 0.5rem;
-                    right: 0.5rem;
+                    right: 0;
                     top: calc(100% + 0.35rem);
                     transform: none;
                     width: auto;
@@ -1166,9 +1131,11 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
         <div class="ratio-card">
             <div class="ratio-head">
                 <div>Oran</div>
-                <div>Değer</div>
+                <div>Hisse</div>
+                <div>Rakip Ort.</div>
             </div>
             {''.join(rows)}
+            <div class="ratio-foot">Kıyaslanan rakipler: {escape(competitor_text)}</div>
         </div>
         """
     )
@@ -1177,20 +1144,11 @@ def finansal_oran_bileseni(veri: dict, competitors: dict) -> None:
 
 with st.sidebar:
     st.title("Hisse Paneli")
-    st.selectbox(
-        "Profil",
-        options=DEMO_PROFILLER,
-        index=0,
-        key="profil_email",
-        help="Şimdilik iki demo profil. Her profil kendi favori listesini ayrı tutar.",
-    )
     profil_senkronize()
 
     if st.session_state.ticker_secimi_bekleyen:
         st.session_state.ticker_secimi = st.session_state.ticker_secimi_bekleyen
         st.session_state.ticker_secimi_bekleyen = None
-
-    st.caption(f"Aktif profil: `{st.session_state.profil_email}`")
 
     ticker = st.selectbox(
         "Hisse kodu",
@@ -1327,56 +1285,8 @@ metrik_1.metric(
 metrik_2.metric("Önceki Kapanış", sayi_formatla(onceki_kapanis, gosterim_para_birimi))
 metrik_3.metric("Ticker", veri["ticker"])
 
-st.markdown("### Hisse Analizi")
-with st.spinner("Rakipler ve finansal skorlar hesaplanıyor..."):
+with st.spinner("Rakipler ve finansal oranlar hesaplanıyor..."):
     analiz_sonucu = analiz_motoru_calistir(veri)
-st.session_state.Ref_List = analiz_sonucu["ref_list"]
-
-st.plotly_chart(
-    radar_chart_olustur(
-        analiz_sonucu["hisse"],
-        analiz_sonucu["referans"],
-        analiz_sonucu["rakipler"],
-        mobil_gorunum,
-    ),
-    use_container_width=True,
-    config={"displayModeBar": False, "scrollZoom": False},
-)
-st.caption(
-    "Ref_List: "
-    + (", ".join(analiz_sonucu["rakipler"]) if analiz_sonucu["rakipler"] else "Veri Yok")
-)
-if analiz_sonucu["eksikler"]:
-    st.warning("Veri Yetersiz: " + ", ".join(analiz_sonucu["eksikler"]))
-
-st.markdown("#### Neden ve Nasıl?")
-for kategori, puan in analiz_sonucu["hisse"].items():
-    with st.container(border=True):
-        st.markdown(f"**{kategori}: {puan}**")
-        st.caption(analiz_sonucu["aciklamalar"].get(kategori, "Açıklama üretilemedi."))
-
-finansal_oranlar = pd.DataFrame(
-    [
-        {
-            "Oran": "F/K",
-            "Değer": oran_formatla(veri["fk"]),
-        },
-        {
-            "Oran": "PD/DD",
-            "Değer": oran_formatla(veri["pd_dd"]),
-        },
-        {
-            "Oran": "Temettü Verimi",
-            "Değer": yuzde_formatla(veri["temettu_verimi"] * 100)
-            if veri["temettu_verimi"] is not None
-            else "Veri yok",
-        },
-        {
-            "Oran": "Yıllık Temettü",
-            "Değer": sayi_formatla(temettu_tutari, gosterim_para_birimi),
-        },
-    ]
-)
 
 st.markdown("### Hisse Grafiği")
 grafik_serisi = gecmis["Close"]
@@ -1390,7 +1300,7 @@ st.plotly_chart(
 )
 
 st.markdown("### Finansal Oranlar")
-finansal_oran_bileseni(veri, analiz_sonucu["competitors"])
+finansal_oran_bileseni(veri, analiz_sonucu)
 
 
 with st.sidebar:

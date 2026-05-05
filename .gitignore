@@ -1,0 +1,6 @@
+.venv/
+.tmp/
+__pycache__/
+.deps/
+data/*.db
+data/*.db-*

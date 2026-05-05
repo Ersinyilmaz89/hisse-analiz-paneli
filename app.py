@@ -206,6 +206,62 @@ st.markdown(
         .block-container { padding-top: 2rem; }
 
         h1, h2, h3 { letter-spacing: 0; }
+
+        @media (max-width: 768px) {
+            .block-container {
+                padding: 1rem 0.85rem 2rem 0.85rem;
+                max-width: 100%;
+            }
+
+            h1 {
+                font-size: 2rem !important;
+                line-height: 1.12 !important;
+            }
+
+            h2, h3 {
+                font-size: 1.35rem !important;
+                line-height: 1.2 !important;
+            }
+
+            [data-testid="stSidebar"] {
+                border-right: 0;
+                border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+            }
+
+            [data-testid="stMetric"] {
+                padding: 0.8rem;
+                min-height: 96px;
+            }
+
+            [data-testid="stMetricValue"] {
+                font-size: 1.45rem !important;
+                white-space: normal !important;
+            }
+
+            [data-testid="stButtonGroup"] {
+                width: 100%;
+                overflow-x: auto;
+            }
+
+            [data-testid="stButtonGroup"] button {
+                min-width: 72px;
+                padding-left: 0.6rem !important;
+                padding-right: 0.6rem !important;
+            }
+
+            [data-testid="stDataFrame"] {
+                overflow-x: auto;
+            }
+
+            [data-testid="stDataFrame"] div {
+                font-size: 0.82rem !important;
+            }
+
+            .stPlotlyChart {
+                margin-left: -0.15rem;
+                margin-right: -0.15rem;
+            }
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -449,7 +505,7 @@ def ticker_satiri(ticker: str, prefix: str) -> None:
         st.rerun()
 
 
-def grafik_olustur(grafik_serisi: pd.Series, para_birimi: str) -> go.Figure:
+def grafik_olustur(grafik_serisi: pd.Series, para_birimi: str, yukseklik: int) -> go.Figure:
     temiz_seri = grafik_serisi.dropna()
     min_deger = float(temiz_seri.min())
     max_deger = float(temiz_seri.max())
@@ -469,7 +525,7 @@ def grafik_olustur(grafik_serisi: pd.Series, para_birimi: str) -> go.Figure:
         )
     )
     fig.update_layout(
-        height=440,
+        height=yukseklik,
         margin={"l": 8, "r": 8, "t": 12, "b": 8},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#f8fafc",
@@ -547,6 +603,12 @@ with st.sidebar:
     st.divider()
     st.caption("BIST hisseleri için `.IS` uzantısını kullanın.")
 
+
+mobil_gorunum = st.toggle(
+    "Mobil görünüm",
+    value=False,
+    help="Telefon ekranında daha sıkı ve okunaklı bir düzen kullanır.",
+)
 
 st.title("Hisse Analiz Paneli")
 
@@ -626,7 +688,7 @@ if guncel_fiyat is not None and onceki_kapanis:
 
 st.subheader(veri["sirket_adi"])
 
-metrik_1, metrik_2, metrik_3 = st.columns(3)
+metrik_1, metrik_2, metrik_3 = st.columns(1 if mobil_gorunum else 3)
 metrik_1.metric(
     "Güncel Fiyat",
     sayi_formatla(guncel_fiyat, gosterim_para_birimi),
@@ -669,13 +731,20 @@ if usd_modu:
     grafik_serisi = usd_seriye_cevir(grafik_serisi, kur_serisi, para_birimi)
 
 st.plotly_chart(
-    grafik_olustur(grafik_serisi, gosterim_para_birimi),
+    grafik_olustur(grafik_serisi, gosterim_para_birimi, 340 if mobil_gorunum else 440),
     use_container_width=True,
     config={"displayModeBar": False, "scrollZoom": True},
 )
 
 st.markdown("### Finansal Oranlar")
-st.dataframe(finansal_oranlar, hide_index=True, use_container_width=True)
+if mobil_gorunum:
+    for oran in finansal_oranlar.to_dict("records"):
+        with st.container(border=True):
+            st.markdown(f"**{oran['Oran']}**")
+            st.metric("Değer", oran["Değer"])
+            st.caption(oran["Açıklama"])
+else:
+    st.dataframe(finansal_oranlar, hide_index=True, use_container_width=True)
 
 
 with st.sidebar:

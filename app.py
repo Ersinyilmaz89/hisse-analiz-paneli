@@ -47,6 +47,9 @@ ANALIZ_EVRENI = sorted(
     )
 )
 
+BIST_EVRENI = sorted([ticker for ticker in ANALIZ_EVRENI if ticker.endswith(".IS")])
+GLOBAL_EVRENI = sorted([ticker for ticker in ANALIZ_EVRENI if not ticker.endswith(".IS")])
+
 RAKIP_ONERILERI = {
     "AAPL": ["MSFT", "NVDA", "GOOGL", "META", "AMZN"],
     "MSFT": ["AAPL", "NVDA", "GOOGL", "ORCL", "ADBE"],
@@ -327,6 +330,9 @@ if "ticker_secimi_bekleyen" not in st.session_state:
 if "sirket_ozeti_goster" not in st.session_state:
     st.session_state.sirket_ozeti_goster = True
 
+if "Ref_List" not in st.session_state:
+    st.session_state.Ref_List = []
+
 
 def db_baglan() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
@@ -402,11 +408,13 @@ def hisse_bilgisi_getir(ticker: str, period: str, interval: str) -> dict:
         "payout_orani": info.get("payoutRatio"),
         "hedef_fiyat": info.get("targetMedianPrice"),
         "kazanc_buyumesi": info.get("earningsQuarterlyGrowth"),
+        "kazanc_buyumesi_yillik": info.get("earningsGrowth"),
         "ozsermaye_karliligi": info.get("returnOnEquity"),
         "gelir_buyumesi": info.get("revenueGrowth"),
         "borc_ozsermaye": info.get("debtToEquity"),
         "cari_oran": info.get("currentRatio"),
         "sektor": info.get("sector"),
+        "endustri": info.get("industry"),
         "piyasa_degeri": info.get("marketCap"),
         "borsa": info.get("exchange") or info.get("fullExchangeName") or "",
         "ozet": info.get("longBusinessSummary") or "Şirket özeti bulunamadı.",
@@ -615,6 +623,7 @@ def temel_info_getir(ticker: str) -> dict:
         "trailingPE": info.get("trailingPE"),
         "currentPrice": info.get("currentPrice") or info.get("regularMarketPrice"),
         "targetMedianPrice": info.get("targetMedianPrice"),
+        "earningsGrowth": info.get("earningsGrowth"),
         "earningsQuarterlyGrowth": info.get("earningsQuarterlyGrowth"),
         "returnOnEquity": info.get("returnOnEquity"),
         "revenueGrowth": info.get("revenueGrowth"),
@@ -623,11 +632,12 @@ def temel_info_getir(ticker: str) -> dict:
         "dividendYield": info.get("dividendYield"),
         "payoutRatio": info.get("payoutRatio"),
         "exchange": info.get("exchange") or info.get("fullExchangeName") or "",
+        "industry": info.get("industry"),
     }
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def uc_yillik_gecmis_ortalamalari(ticker: str) -> dict:
+def bes_yillik_gecmis_ortalamalari(ticker: str) -> dict:
     try:
         hisse = yf.Ticker(ticker)
         finansallar = hisse.financials
@@ -645,22 +655,22 @@ def uc_yillik_gecmis_ortalamalari(ticker: str) -> dict:
                     break
 
             if ozsermaye_satiri is not None:
-                for tarih in net_kar.index[:3]:
+                for tarih in net_kar.index[:5]:
                     if tarih in ozsermaye_satiri.index and ozsermaye_satiri[tarih]:
                         roe_degerleri.append(float(net_kar[tarih]) / float(ozsermaye_satiri[tarih]))
 
             gelir = gelir.dropna()
-            for i in range(min(3, len(gelir) - 1)):
+            for i in range(min(5, len(gelir) - 1)):
                 onceki = float(gelir.iloc[i + 1])
                 if onceki:
                     gelir_buyumeleri.append((float(gelir.iloc[i]) - onceki) / onceki)
 
         return {
-            "roe_3y": ortalama(roe_degerleri),
-            "revenue_growth_3y": ortalama(gelir_buyumeleri),
+            "roe_5y": ortalama(roe_degerleri),
+            "revenue_growth_5y": ortalama(gelir_buyumeleri),
         }
     except Exception:
-        return {"roe_3y": None, "revenue_growth_3y": None}
+        return {"roe_5y": None, "revenue_growth_5y": None}
 
 
 def rakip_etiketi(info: dict) -> str:
@@ -669,9 +679,10 @@ def rakip_etiketi(info: dict) -> str:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def rakipleri_bul(ticker: str, sektor: str | None, piyasa_degeri: float | None) -> list[dict]:
+def rakipleri_bul(ticker: str, sektor: str | None, endustri: str | None, piyasa_degeri: float | None) -> list[dict]:
     ticker = ticker.upper()
-    adaylar = list(dict.fromkeys(RAKIP_ONERILERI.get(ticker, []) + ANALIZ_EVRENI))
+    evren = BIST_EVRENI if ticker.endswith(".IS") else GLOBAL_EVRENI
+    adaylar = list(dict.fromkeys(RAKIP_ONERILERI.get(ticker, []) + evren + ANALIZ_EVRENI))
     rakipler = []
 
     for aday in adaylar:
@@ -683,13 +694,15 @@ def rakipleri_bul(ticker: str, sektor: str | None, piyasa_degeri: float | None) 
             continue
 
         aday_sektor = info.get("sector")
+        aday_endustri = info.get("industry")
         aday_piyasa_degeri = info.get("marketCap")
         if not aday_piyasa_degeri:
             continue
 
         sektor_uyumu = sektor and aday_sektor and aday_sektor.lower() == sektor.lower()
+        endustri_uyumu = endustri and aday_endustri and aday_endustri.lower() == endustri.lower()
         oneri_uyumu = aday in RAKIP_ONERILERI.get(ticker, [])
-        if not sektor_uyumu and not oneri_uyumu:
+        if not sektor_uyumu and not endustri_uyumu and not oneri_uyumu:
             continue
 
         if piyasa_degeri and aday_piyasa_degeri and piyasa_degeri > 0 and aday_piyasa_degeri > 0:
@@ -697,43 +710,74 @@ def rakipleri_bul(ticker: str, sektor: str | None, piyasa_degeri: float | None) 
         else:
             yakinlik = 99
         info["market_cap_distance"] = yakinlik
+        info["peer_rank_market_cap"] = aday_piyasa_degeri
         rakipler.append(info)
 
-    rakipler = sorted(rakipler, key=lambda item: item["market_cap_distance"])
+    rakipler = sorted(
+        rakipler,
+        key=lambda item: (
+            0 if item.get("industry", "").lower() == (endustri or "").lower() else 1,
+            -item.get("peer_rank_market_cap", 0),
+            item["market_cap_distance"],
+        ),
+    )
     return rakipler[:5]
 
 
-def hisse_puanla(info: dict, peer_pe_avg: float | None, gecmis_ortalamalari: dict | None = None) -> dict[str, int]:
+def eksik_mi(*degerler) -> bool:
+    return any(deger is None for deger in degerler)
+
+
+def hisse_puanla(
+    info: dict,
+    peer_pe_avg: float | None,
+    peer_dividend_avg: float | None,
+    gecmis_ortalamalari: dict | None = None,
+) -> tuple[dict[str, int], dict[str, bool], dict[str, str]]:
+    eksikler = {}
+    aciklamalar = {}
     pe = info.get("trailingPE")
     if pe and peer_pe_avg and pe > 0:
         degerleme = 50 + ((peer_pe_avg - pe) / peer_pe_avg) * 55
+        eksikler["Değerleme"] = False
     else:
-        degerleme = 0
+        degerleme = 50
+        eksikler["Değerleme"] = True
+    aciklamalar["Değerleme"] = (
+        f"Firmanın F/K oranı {oran_formatla(pe)}, rakip ortalaması {oran_formatla(peer_pe_avg)} ile karşılaştırıldı."
+        if not eksikler["Değerleme"]
+        else "F/K veya rakip ortalaması eksik olduğu için değerleme puanı veri yetersiz olarak işaretlendi."
+    )
 
-    current_price = info.get("currentPrice")
-    target_price = info.get("targetMedianPrice")
-    earnings_growth = info.get("earningsQuarterlyGrowth")
+    earnings_growth = info.get("earningsGrowth")
+    revenue_growth = info.get("revenueGrowth")
     gelecek_bilesenleri = []
     if earnings_growth is not None:
         gelecek_bilesenleri.append(50 + earnings_growth * 110)
-    if current_price and target_price:
-        upside = (target_price - current_price) / current_price
-        gelecek_bilesenleri.append(50 + upside * 140)
+    if revenue_growth is not None:
+        gelecek_bilesenleri.append(50 + revenue_growth * 120)
     gelecek = ortalama(gelecek_bilesenleri) if gelecek_bilesenleri else 0
+    eksikler["Gelecek"] = not gelecek_bilesenleri
+    aciklamalar["Gelecek"] = (
+        f"Kazanç büyümesi {yuzde_formatla(earnings_growth * 100) if earnings_growth is not None else 'Veri Yok'} ve gelir büyümesi {yuzde_formatla(revenue_growth * 100) if revenue_growth is not None else 'Veri Yok'} birlikte puanlandı."
+        if not eksikler["Gelecek"]
+        else "earningsGrowth ve revenueGrowth verileri bulunamadı."
+    )
 
     gecmis_ortalamalari = gecmis_ortalamalari or {}
-    roe = gecmis_ortalamalari.get("roe_3y")
-    revenue_growth = gecmis_ortalamalari.get("revenue_growth_3y")
+    roe = gecmis_ortalamalari.get("roe_5y")
     if roe is None:
         roe = info.get("returnOnEquity")
-    if revenue_growth is None:
-        revenue_growth = info.get("revenueGrowth")
     gecmis_bilesenleri = []
     if roe is not None:
-        gecmis_bilesenleri.append(50 + roe * 120)
-    if revenue_growth is not None:
-        gecmis_bilesenleri.append(50 + revenue_growth * 130)
+        gecmis_bilesenleri.append(50 + roe * 150)
     gecmis = ortalama(gecmis_bilesenleri) if gecmis_bilesenleri else 0
+    eksikler["Geçmiş"] = not gecmis_bilesenleri
+    aciklamalar["Geçmiş"] = (
+        f"Son yıllar ROE ortalaması {yuzde_formatla(roe * 100)} baz alınarak hesaplandı."
+        if not eksikler["Geçmiş"]
+        else "Son 5 yıllık ROE veya returnOnEquity verisi bulunamadı."
+    )
 
     debt_to_equity = info.get("debtToEquity")
     current_ratio = info.get("currentRatio")
@@ -743,23 +787,37 @@ def hisse_puanla(info: dict, peer_pe_avg: float | None, gecmis_ortalamalari: dic
     if current_ratio is not None:
         saglik_bilesenleri.append(min(100, current_ratio / 2 * 100))
     saglik = ortalama(saglik_bilesenleri) if saglik_bilesenleri else 0
+    eksikler["Sağlık"] = not saglik_bilesenleri
+    aciklamalar["Sağlık"] = (
+        f"Borç/özkaynak {oran_formatla(debt_to_equity)} ve cari oran {oran_formatla(current_ratio)} ile finansal dayanıklılık puanlandı."
+        if not eksikler["Sağlık"]
+        else "debtToEquity ve currentRatio verileri bulunamadı."
+    )
 
     dividend_yield = info.get("dividendYield")
-    payout_ratio = info.get("payoutRatio")
-    temettu_bilesenleri = []
-    if dividend_yield is not None:
-        temettu_bilesenleri.append(min(100, dividend_yield * 1200))
-    if payout_ratio is not None:
-        temettu_bilesenleri.append(100 - min(100, abs(payout_ratio - 0.55) * 170))
-    temettu = ortalama(temettu_bilesenleri) if temettu_bilesenleri else 0
+    if dividend_yield is not None and peer_dividend_avg is not None:
+        if peer_dividend_avg > 0:
+            temettu = 50 + ((dividend_yield - peer_dividend_avg) / peer_dividend_avg) * 55
+        else:
+            temettu = min(100, dividend_yield * 1200)
+        eksikler["Temettü"] = False
+    else:
+        temettu = 50
+        eksikler["Temettü"] = True
+    aciklamalar["Temettü"] = (
+        f"Temettü verimi {yuzde_formatla(dividend_yield * 100)}, rakip ortalaması {yuzde_formatla(peer_dividend_avg * 100)} ile kıyaslandı."
+        if not eksikler["Temettü"]
+        else "Temettü verimi veya sektör/rakip ortalaması eksik."
+    )
 
-    return {
+    puanlar = {
         "Değerleme": puan_sinirla(degerleme),
         "Gelecek": puan_sinirla(gelecek),
         "Geçmiş": puan_sinirla(gecmis),
         "Sağlık": puan_sinirla(saglik),
         "Temettü": puan_sinirla(temettu),
     }
+    return puanlar, eksikler, aciklamalar
 
 
 def referans_puan_ortalamasi(rakip_puanlari: list[dict[str, int]]) -> dict[str, int]:
@@ -771,6 +829,10 @@ def referans_puan_ortalamasi(rakip_puanlari: list[dict[str, int]]) -> dict[str, 
     }
 
 
+def eksik_kriterleri_birlestir(eksikler: dict[str, bool]) -> list[str]:
+    return [kriter for kriter, eksik in eksikler.items() if eksik]
+
+
 def analiz_motoru_calistir(veri: dict) -> dict:
     ana_info = {
         "ticker": veri["ticker"],
@@ -779,6 +841,7 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "trailingPE": veri["fk"],
         "currentPrice": veri["guncel_fiyat"],
         "targetMedianPrice": veri["hedef_fiyat"],
+        "earningsGrowth": veri["kazanc_buyumesi_yillik"],
         "earningsQuarterlyGrowth": veri["kazanc_buyumesi"],
         "returnOnEquity": veri["ozsermaye_karliligi"],
         "revenueGrowth": veri["gelir_buyumesi"],
@@ -787,21 +850,34 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "dividendYield": veri["temettu_verimi"],
         "payoutRatio": veri["payout_orani"],
         "exchange": veri["borsa"],
+        "industry": veri["endustri"],
     }
-    rakipler = rakipleri_bul(veri["ticker"], veri["sektor"], veri["piyasa_degeri"])
+    rakipler = rakipleri_bul(veri["ticker"], veri["sektor"], veri["endustri"], veri["piyasa_degeri"])
     peer_pe_avg = ortalama([rakip.get("trailingPE") for rakip in rakipler])
-    ana_gecmis = uc_yillik_gecmis_ortalamalari(veri["ticker"])
-    hisse_puanlari = hisse_puanla(ana_info, peer_pe_avg, ana_gecmis)
+    peer_dividend_avg = ortalama([rakip.get("dividendYield") for rakip in rakipler])
+    ana_gecmis = bes_yillik_gecmis_ortalamalari(veri["ticker"])
+    hisse_puanlari, eksikler, aciklamalar = hisse_puanla(
+        ana_info,
+        peer_pe_avg,
+        peer_dividend_avg,
+        ana_gecmis,
+    )
 
     rakip_puanlari = []
     for rakip in rakipler:
-        rakip_gecmis = uc_yillik_gecmis_ortalamalari(rakip["ticker"])
-        rakip_puanlari.append(hisse_puanla(rakip, peer_pe_avg, rakip_gecmis))
+        rakip_gecmis = bes_yillik_gecmis_ortalamalari(rakip["ticker"])
+        rakip_puan, _, _ = hisse_puanla(rakip, peer_pe_avg, peer_dividend_avg, rakip_gecmis)
+        rakip_puanlari.append(rakip_puan)
 
     return {
         "hisse": hisse_puanlari,
         "referans": referans_puan_ortalamasi(rakip_puanlari),
         "rakipler": [rakip_etiketi(rakip) for rakip in rakipler],
+        "ref_list": [rakip["ticker"] for rakip in rakipler],
+        "eksikler": eksik_kriterleri_birlestir(eksikler),
+        "aciklamalar": aciklamalar,
+        "peer_pe_avg": peer_pe_avg,
+        "peer_dividend_avg": peer_dividend_avg,
     }
 
 
@@ -812,7 +888,7 @@ def radar_chart_olustur(puanlar: dict[str, int], referans_puanlar: dict[str, int
     kapali_kategoriler = [*kategoriler, kategoriler[0]]
     kapali_degerler = [*degerler, degerler[0]]
     kapali_referans_degerler = [*referans_degerler, referans_degerler[0]]
-    rakip_metni = f"Kıyaslanan Hisseler: {', '.join(rakipler) if rakipler else 'Veri Yok'}"
+    rakip_metni = f"Kıyaslanan Rakipler: {', '.join(rakipler) if rakipler else 'Veri Yok'}"
 
     fig = go.Figure()
     fig.add_trace(
@@ -1028,6 +1104,7 @@ metrik_3.metric("Ticker", veri["ticker"])
 st.markdown("### Hisse Analizi")
 with st.spinner("Rakipler ve finansal skorlar hesaplanıyor..."):
     analiz_sonucu = analiz_motoru_calistir(veri)
+st.session_state.Ref_List = analiz_sonucu["ref_list"]
 
 st.plotly_chart(
     radar_chart_olustur(
@@ -1040,9 +1117,17 @@ st.plotly_chart(
     config={"displayModeBar": False, "scrollZoom": False},
 )
 st.caption(
-    "Kıyaslanan hisseler: "
+    "Ref_List: "
     + (", ".join(analiz_sonucu["rakipler"]) if analiz_sonucu["rakipler"] else "Veri Yok")
 )
+if analiz_sonucu["eksikler"]:
+    st.warning("Veri Yetersiz: " + ", ".join(analiz_sonucu["eksikler"]))
+
+st.markdown("#### Neden ve Nasıl?")
+for kategori, puan in analiz_sonucu["hisse"].items():
+    with st.container(border=True):
+        st.markdown(f"**{kategori}: {puan}**")
+        st.caption(analiz_sonucu["aciklamalar"].get(kategori, "Açıklama üretilemedi."))
 
 finansal_oranlar = pd.DataFrame(
     [

@@ -66,6 +66,16 @@ st.markdown(
             color: #f8fafc;
         }
 
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        #MainMenu,
+        header,
+        footer {
+            visibility: hidden !important;
+            height: 0 !important;
+        }
+
         [data-testid="stSidebar"] {
             background: rgba(15, 23, 42, 0.96);
             border-right: 1px solid rgba(148, 163, 184, 0.24);
@@ -204,7 +214,7 @@ st.markdown(
             font-weight: 700 !important;
         }
 
-        .block-container { padding-top: 2rem; }
+        .block-container { padding-top: 3.25rem; }
 
         h1, h2, h3 { letter-spacing: 0; }
 

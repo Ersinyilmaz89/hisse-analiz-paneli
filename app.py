@@ -51,6 +51,7 @@ USD_CEVRIMLERI = {
 }
 
 DB_PATH = Path("data") / "profiles.db"
+DEMO_PROFILLER = ["Joker1", "Joker2"]
 
 
 st.markdown(
@@ -275,7 +276,7 @@ if "favoriler" not in st.session_state:
     st.session_state.favoriler = []
 
 if "profil_email" not in st.session_state:
-    st.session_state.profil_email = "demo@local"
+    st.session_state.profil_email = DEMO_PROFILLER[0]
 
 if "aktif_profil" not in st.session_state:
     st.session_state.aktif_profil = None
@@ -340,7 +341,7 @@ def favori_sil(profile_email: str, ticker: str) -> None:
 
 
 def profil_senkronize() -> None:
-    profil = (st.session_state.profil_email or "demo@local").strip().lower()
+    profil = (st.session_state.profil_email or DEMO_PROFILLER[0]).strip().lower()
     if st.session_state.aktif_profil != profil:
         st.session_state.aktif_profil = profil
         st.session_state.favoriler = favorileri_yukle(profil)
@@ -472,7 +473,7 @@ def gecmise_ekle(ticker: str) -> None:
 
 def favori_degistir(ticker: str) -> None:
     ticker = ticker.upper()
-    profil = st.session_state.aktif_profil or "demo@local"
+    profil = st.session_state.aktif_profil or DEMO_PROFILLER[0].lower()
     if ticker in st.session_state.favoriler:
         st.session_state.favoriler = [
             kod for kod in st.session_state.favoriler if kod != ticker
@@ -548,11 +549,12 @@ def grafik_olustur(grafik_serisi: pd.Series, para_birimi: str, yukseklik: int) -
 
 with st.sidebar:
     st.title("Hisse Paneli")
-    st.text_input(
+    st.selectbox(
         "Profil",
+        options=DEMO_PROFILLER,
+        index=0,
         key="profil_email",
-        placeholder="ornek@email.com",
-        help="Şimdilik deneme profili. Google girişinde bu alan Google e-postasıyla otomatik dolacak.",
+        help="Şimdilik iki demo profil. Her profil kendi favori listesini ayrı tutar.",
     )
     profil_senkronize()
 
@@ -560,7 +562,7 @@ with st.sidebar:
         st.session_state.ticker_secimi = st.session_state.ticker_secimi_bekleyen
         st.session_state.ticker_secimi_bekleyen = None
 
-    st.caption(f"Aktif profil: `{st.session_state.aktif_profil}`")
+    st.caption(f"Aktif profil: `{st.session_state.profil_email}`")
 
     ticker = st.selectbox(
         "Hisse kodu",

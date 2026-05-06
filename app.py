@@ -528,6 +528,21 @@ def usd_seriye_cevir(seri: pd.Series, kur_serisi: pd.Series | None, para_birimi:
     return seri
 
 
+def tarihteki_kur(kur_serisi: pd.Series | None, tarih: pd.Timestamp) -> float | None:
+    if kur_serisi is None or kur_serisi.empty:
+        return None
+
+    kur_temiz = kur_serisi.copy()
+    kur_temiz.index = pd.to_datetime(kur_temiz.index).tz_localize(None).normalize()
+    tarih = pd.Timestamp(tarih).tz_localize(None).normalize()
+    uygun = kur_temiz.loc[kur_temiz.index <= tarih].dropna()
+    if uygun.empty:
+        uygun = kur_temiz.dropna()
+    if uygun.empty:
+        return None
+    return float(uygun.iloc[-1])
+
+
 def yuzde_formatla(deger: float | None) -> str:
     if deger is None:
         return "Veri yok"
@@ -816,6 +831,97 @@ def grafik_olustur(grafik_serisi: pd.Series, para_birimi: str, yukseklik: int) -
         font={"color": "#334155"},
     )
     return fig
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def temettu_gecmisi_getir(ticker: str) -> pd.DataFrame:
+    hisse = yf.Ticker(ticker)
+    temettuler = hisse.dividends
+    if temettuler is None or temettuler.empty:
+        return pd.DataFrame()
+
+    temettuler = temettuler.copy()
+    temettuler.index = pd.to_datetime(temettuler.index).tz_localize(None).normalize()
+    baslangic = pd.Timestamp.today().normalize() - pd.DateOffset(years=10)
+    temettuler = temettuler[temettuler.index >= baslangic]
+    if temettuler.empty:
+        return pd.DataFrame()
+
+    fiyat_baslangic = temettuler.index.min() - pd.Timedelta(days=10)
+    fiyat_bitis = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+    fiyatlar = hisse.history(
+        start=fiyat_baslangic,
+        end=fiyat_bitis,
+        interval="1d",
+        auto_adjust=False,
+    )
+    if fiyatlar.empty or "Close" not in fiyatlar:
+        return pd.DataFrame()
+
+    kapanis = fiyatlar["Close"].dropna().copy()
+    kapanis.index = pd.to_datetime(kapanis.index).tz_localize(None).normalize()
+
+    satirlar = []
+    for tarih, temettu in temettuler.sort_index(ascending=False).items():
+        fiyat_adaylari = kapanis.loc[kapanis.index <= tarih]
+        if fiyat_adaylari.empty:
+            continue
+
+        fiyat = float(fiyat_adaylari.iloc[-1])
+        temettu = float(temettu)
+        temettu_orani = (temettu / fiyat) * 100 if fiyat > 0 else None
+        satirlar.append(
+            {
+                "Tarih": tarih,
+                "Temettü": temettu,
+                "Hisse Fiyatı": fiyat,
+                "Temettü Oranı": temettu_orani,
+            }
+        )
+
+    return pd.DataFrame(satirlar)
+
+
+def temettu_gecmisi_goster(
+    temettu_df: pd.DataFrame,
+    para_birimi: str,
+    usd_modu: bool,
+    kur_serisi: pd.Series | None,
+) -> None:
+    st.markdown("### Temettü Geçmişi")
+
+    if temettu_df.empty:
+        st.info("Son 10 yılda temettü verisi bulunamadı.")
+        return
+
+    gosterim = temettu_df.copy()
+    gosterim_para_birimi = "USD" if usd_modu else para_birimi
+
+    if usd_modu:
+        for index, satir in gosterim.iterrows():
+            kur = tarihteki_kur(kur_serisi, satir["Tarih"])
+            gosterim.at[index, "Temettü"] = usd_degere_cevir(satir["Temettü"], kur, para_birimi)
+            gosterim.at[index, "Hisse Fiyatı"] = usd_degere_cevir(satir["Hisse Fiyatı"], kur, para_birimi)
+
+    gosterim["Tarih"] = pd.to_datetime(gosterim["Tarih"]).dt.strftime("%d.%m.%Y")
+    gosterim["Temettü"] = gosterim["Temettü"].apply(lambda deger: sayi_formatla(deger, gosterim_para_birimi))
+    gosterim["Hisse Fiyatı"] = gosterim["Hisse Fiyatı"].apply(lambda deger: sayi_formatla(deger, gosterim_para_birimi))
+    gosterim["Temettü Oranı"] = gosterim["Temettü Oranı"].apply(yuzde_formatla)
+
+    st.dataframe(
+        gosterim.rename(
+            columns={
+                "Temettü": "Hisse Başı Temettü",
+                "Temettü Oranı": "Fiyata Oranı",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "Temettü oranı, temettü tarihindeki kapanış fiyatına göre hesaplanır. "
+        "Temettü tutarı Yahoo Finance'ın hisse başı dağıtım verisidir; kaynak net/brüt ayrımı vermiyorsa aynı tutar gösterilir."
+    )
 
 
 def puan_sinirla(deger: float) -> int:
@@ -1695,6 +1801,12 @@ st.plotly_chart(
 
 st.markdown("### Finansal Oranlar")
 finansal_oran_bileseni(veri, analiz_sonucu)
+
+temettu_df = temettu_gecmisi_getir(veri["ticker"])
+temettu_kur_serisi = kur_serisi
+if usd_modu:
+    _, temettu_kur_serisi = kur_verisi_getir(para_birimi, "10y", "1d")
+temettu_gecmisi_goster(temettu_df, para_birimi, usd_modu, temettu_kur_serisi)
 
 
 with st.sidebar:

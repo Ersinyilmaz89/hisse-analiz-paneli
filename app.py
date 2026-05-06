@@ -323,6 +323,17 @@ st.markdown(
                 margin-right: -0.15rem;
             }
         }
+
+        .analyst-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            color: #ffffff;
+            font-weight: 900;
+            padding: 0.35rem 0.75rem;
+            margin: 0.2rem 0 0.8rem;
+            letter-spacing: 0;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -421,6 +432,11 @@ def hisse_bilgisi_getir(ticker: str, period: str, interval: str) -> dict:
         "temettu_tutari": info.get("dividendRate"),
         "payout_orani": info.get("payoutRatio"),
         "hedef_fiyat": info.get("targetMedianPrice"),
+        "hedef_ortalama": info.get("targetMeanPrice"),
+        "hedef_yuksek": info.get("targetHighPrice"),
+        "hedef_dusuk": info.get("targetLowPrice"),
+        "analist_sayisi": info.get("numberOfAnalystOpinions"),
+        "analist_gorusu": info.get("recommendationKey"),
         "kazanc_buyumesi": info.get("earningsQuarterlyGrowth"),
         "kazanc_buyumesi_yillik": info.get("earningsGrowth"),
         "ozsermaye_karliligi": info.get("returnOnEquity"),
@@ -921,6 +937,156 @@ def temettu_gecmisi_goster(
     st.caption(
         "Temettü oranı, temettü tarihindeki kapanış fiyatına göre hesaplanır. "
         "Temettü tutarı Yahoo Finance'ın hisse başı dağıtım verisidir; kaynak net/brüt ayrımı vermiyorsa aynı tutar gösterilir."
+    )
+
+
+def analist_gorusu_etiketi(gorus: str | None) -> tuple[str, str]:
+    harita = {
+        "strong_buy": ("GÜÇLÜ AL", "#16a34a"),
+        "buy": ("AL", "#22c55e"),
+        "hold": ("TUT", "#f59e0b"),
+        "underperform": ("ZAYIF", "#f97316"),
+        "sell": ("SAT", "#ef4444"),
+        "strong_sell": ("GÜÇLÜ SAT", "#dc2626"),
+    }
+    return harita.get((gorus or "").lower(), ("VERİ YOK", "#94a3b8"))
+
+
+def hedef_fiyat_grafigi_olustur(
+    guncel_fiyat: float,
+    hedef_ortalama: float,
+    hedef_dusuk: float,
+    hedef_yuksek: float,
+    para_birimi: str,
+    yukseklik: int,
+) -> go.Figure:
+    alt = min(hedef_dusuk, hedef_ortalama, hedef_yuksek, guncel_fiyat)
+    ust = max(hedef_dusuk, hedef_ortalama, hedef_yuksek, guncel_fiyat)
+    pay = (ust - alt) * 0.16 if ust > alt else max(ust * 0.08, 1)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=[hedef_dusuk, hedef_yuksek],
+            y=[0, 0],
+            mode="lines",
+            line={"color": "rgba(148, 163, 184, 0.7)", "width": 18},
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[guncel_fiyat],
+            y=[0],
+            mode="markers+text",
+            marker={"color": "#38bdf8", "size": 15, "symbol": "diamond"},
+            text=["Mevcut"],
+            textposition="bottom center",
+            name="Mevcut Fiyat",
+            hovertemplate=f"Mevcut Fiyat: %{{x:,.2f}} {para_birimi}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[hedef_ortalama],
+            y=[0],
+            mode="markers+text",
+            marker={"color": "#ff4655", "size": 17, "symbol": "circle"},
+            text=["Ort. Hedef"],
+            textposition="top center",
+            name="Ortalama Hedef",
+            hovertemplate=f"Ortalama Hedef: %{{x:,.2f}} {para_birimi}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=yukseklik,
+        margin={"l": 8, "r": 8, "t": 26, "b": 18},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(15, 23, 42, 0.25)",
+        showlegend=False,
+        xaxis={
+            "range": [alt - pay, ust + pay],
+            "tickfont": {"color": "#cbd5e1"},
+            "gridcolor": "rgba(148, 163, 184, 0.14)",
+            "zeroline": False,
+        },
+        yaxis={"visible": False, "range": [-0.55, 0.55]},
+        annotations=[
+            {
+                "x": hedef_dusuk,
+                "y": 0.28,
+                "text": f"En Düşük<br>{sayi_formatla(hedef_dusuk, para_birimi)}",
+                "showarrow": False,
+                "font": {"color": "#cbd5e1", "size": 12},
+                "xanchor": "left",
+            },
+            {
+                "x": hedef_yuksek,
+                "y": 0.28,
+                "text": f"En Yüksek<br>{sayi_formatla(hedef_yuksek, para_birimi)}",
+                "showarrow": False,
+                "font": {"color": "#cbd5e1", "size": 12},
+                "xanchor": "right",
+            },
+        ],
+        font={"color": "#f8fafc"},
+    )
+    return fig
+
+
+def analist_beklentileri_goster(
+    veri: dict,
+    guncel_fiyat: float | None,
+    para_birimi: str,
+    usd_modu: bool,
+    kur: float | None,
+    mobil: bool,
+) -> None:
+    st.markdown("### Aracı Kurum Beklentileri")
+    st.caption("Analistlerin 1 Yıllık Ortalama Hedef Fiyat Öngörüsü")
+
+    hedef_ortalama = veri.get("hedef_ortalama") or veri.get("hedef_fiyat")
+    hedef_yuksek = veri.get("hedef_yuksek")
+    hedef_dusuk = veri.get("hedef_dusuk")
+    analist_sayisi = veri.get("analist_sayisi")
+
+    if usd_modu:
+        hedef_ortalama = usd_degere_cevir(hedef_ortalama, kur, veri["para_birimi"])
+        hedef_yuksek = usd_degere_cevir(hedef_yuksek, kur, veri["para_birimi"])
+        hedef_dusuk = usd_degere_cevir(hedef_dusuk, kur, veri["para_birimi"])
+
+    gorus_metni, gorus_renk = analist_gorusu_etiketi(veri.get("analist_gorusu"))
+    st.markdown(
+        f"""
+        <div class="analyst-badge" style="background:{gorus_renk};">
+            Genel Analist Görüşü: {escape(gorus_metni)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not all([guncel_fiyat, hedef_ortalama, hedef_yuksek, hedef_dusuk]):
+        st.info("Bu hisse için yeterli hedef fiyat verisi bulunamadı.")
+        return
+
+    beklenen_getiri = ((hedef_ortalama - guncel_fiyat) / guncel_fiyat) * 100
+    kolonlar = st.columns(1 if mobil else 3)
+    kolonlar[0].metric("Ortalama Hedef", sayi_formatla(hedef_ortalama, para_birimi))
+    kolonlar[1].metric("Beklenen Getiri Potansiyeli", yuzde_formatla(beklenen_getiri))
+    kolonlar[2].metric("Analist Sayısı", int(analist_sayisi) if analist_sayisi else "Veri yok")
+
+    st.plotly_chart(
+        hedef_fiyat_grafigi_olustur(
+            guncel_fiyat,
+            hedef_ortalama,
+            hedef_dusuk,
+            hedef_yuksek,
+            para_birimi,
+            230 if mobil else 260,
+        ),
+        use_container_width=True,
+        config={"displayModeBar": False, "scrollZoom": False},
     )
 
 
@@ -1797,6 +1963,15 @@ st.plotly_chart(
     grafik_olustur(grafik_serisi, gosterim_para_birimi, 340 if mobil_gorunum else 440),
     use_container_width=True,
     config={"displayModeBar": False, "scrollZoom": True},
+)
+
+analist_beklentileri_goster(
+    veri,
+    guncel_fiyat,
+    gosterim_para_birimi,
+    usd_modu,
+    kur,
+    mobil_gorunum,
 )
 
 st.markdown("### Finansal Oranlar")

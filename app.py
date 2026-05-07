@@ -987,6 +987,7 @@ def temettu_gecmisi_goster(
 
     gosterim = temettu_df.copy()
     gosterim_para_birimi = "USD" if usd_modu else para_birimi
+    hedef_temettu_usd = 12000.0
 
     if usd_modu:
         for index, satir in gosterim.iterrows():
@@ -994,16 +995,36 @@ def temettu_gecmisi_goster(
             gosterim.at[index, "Temettü"] = usd_degere_cevir(satir["Temettü"], kur, para_birimi)
             gosterim.at[index, "Hisse Fiyatı"] = usd_degere_cevir(satir["Hisse Fiyatı"], kur, para_birimi)
 
+    if usd_modu:
+        gosterim["Gerekli Hisse Adedi"] = gosterim["Temettü"].apply(
+            lambda deger: math.ceil(hedef_temettu_usd / deger) if deger and deger > 0 else None
+        )
+        gosterim["Gerekli Portföy"] = gosterim.apply(
+            lambda satir: satir["Gerekli Hisse Adedi"] * satir["Hisse Fiyatı"]
+            if satir["Gerekli Hisse Adedi"] and satir["Hisse Fiyatı"]
+            else None,
+            axis=1,
+        )
+    else:
+        gosterim["Gerekli Hisse Adedi"] = None
+        gosterim["Gerekli Portföy"] = None
+
     gosterim["Tarih"] = pd.to_datetime(gosterim["Tarih"]).dt.strftime("%d.%m.%Y")
     gosterim["Temettü"] = gosterim["Temettü"].apply(lambda deger: sayi_formatla(deger, gosterim_para_birimi))
     gosterim["Hisse Fiyatı"] = gosterim["Hisse Fiyatı"].apply(lambda deger: sayi_formatla(deger, gosterim_para_birimi))
     gosterim["Temettü Oranı"] = gosterim["Temettü Oranı"].apply(yuzde_formatla)
+    gosterim["Gerekli Hisse Adedi"] = gosterim["Gerekli Hisse Adedi"].apply(
+        lambda deger: f"{int(deger):,}" if deger else "Veri yok"
+    )
+    gosterim["Gerekli Portföy"] = gosterim["Gerekli Portföy"].apply(lambda deger: sayi_formatla(deger, "USD"))
 
     st.dataframe(
         gosterim.rename(
             columns={
                 "Temettü": "Hisse Başı Temettü",
                 "Temettü Oranı": "Fiyata Oranı",
+                "Gerekli Hisse Adedi": "12.000 USD İçin Adet",
+                "Gerekli Portföy": "12.000 USD İçin Portföy",
             }
         ),
         use_container_width=True,
@@ -1011,6 +1032,7 @@ def temettu_gecmisi_goster(
     )
     st.caption(
         "Temettü oranı, temettü tarihindeki kapanış fiyatına göre hesaplanır. "
+        "12.000 USD hesabı, temettü ve fiyat USD'ye çevrilebiliyorsa gösterilir. "
         "Temettü tutarı Yahoo Finance'ın hisse başı dağıtım verisidir; kaynak net/brüt ayrımı vermiyorsa aynı tutar gösterilir."
     )
 

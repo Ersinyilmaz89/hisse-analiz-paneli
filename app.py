@@ -33,6 +33,30 @@ ONERILEN_HISSELER = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
 ]
 
+BIST100_HISSELERI = [
+    "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS",
+    "AKFGY.IS", "AKFYE.IS", "AKSA.IS", "AKSEN.IS", "ALARK.IS",
+    "ALBRK.IS", "ALFAS.IS", "ALTNY.IS", "ANHYT.IS", "ANSGR.IS",
+    "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "AVPGY.IS", "BERA.IS",
+    "BIMAS.IS", "BRSAN.IS", "BRYAT.IS", "BSOKE.IS", "BTCIM.IS",
+    "CANTE.IS", "CCOLA.IS", "CIMSA.IS", "CLEBI.IS", "CWENE.IS",
+    "DOAS.IS", "DOHOL.IS", "ECILC.IS", "EFORC.IS", "EGEEN.IS",
+    "EKGYO.IS", "ENERY.IS", "ENJSA.IS", "ENKAI.IS", "EREGL.IS",
+    "EUPWR.IS", "FROTO.IS", "GARAN.IS", "GESAN.IS", "GUBRF.IS",
+    "HALKB.IS", "HEKTS.IS", "ISCTR.IS", "ISGYO.IS", "ISMEN.IS",
+    "KARSN.IS", "KCAER.IS", "KCHOL.IS", "KLSER.IS", "KONTR.IS",
+    "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "KTLEV.IS", "MAVI.IS",
+    "MGROS.IS", "MIATK.IS", "MPARK.IS", "OBAMS.IS", "ODAS.IS",
+    "OTKAR.IS", "OYAKC.IS", "PASEU.IS", "PETKM.IS", "PGSUS.IS",
+    "QUAGR.IS", "REEDR.IS", "SAHOL.IS", "SASA.IS", "SISE.IS",
+    "SKBNK.IS", "SMRTG.IS", "SOKM.IS", "TAVHL.IS", "TCELL.IS",
+    "THYAO.IS", "TKFEN.IS", "TOASO.IS", "TSKB.IS", "TTKOM.IS",
+    "TTRAK.IS", "TUPRS.IS", "TURSG.IS", "ULKER.IS", "VAKBN.IS",
+    "VESTL.IS", "YEOTK.IS", "YKBNK.IS", "ZOREN.IS",
+]
+
+ONERILEN_HISSELER = sorted(set(ONERILEN_HISSELER + BIST100_HISSELERI))
+
 ANALIZ_EVRENI = sorted(
     set(
         ONERILEN_HISSELER
@@ -334,6 +358,34 @@ st.markdown(
             margin: 0.2rem 0 0.8rem;
             letter-spacing: 0;
         }
+
+        .event-impact {
+            border-left: 4px solid #94a3b8;
+            background: rgba(15, 23, 42, 0.62);
+            border-radius: 8px;
+            padding: 0.9rem 1rem;
+        }
+
+        .event-impact span {
+            display: inline-flex;
+            color: #ffffff;
+            border-radius: 999px;
+            padding: 0.18rem 0.55rem;
+            font-size: 0.78rem;
+            font-weight: 900;
+            margin-bottom: 0.65rem;
+        }
+
+        .event-impact p {
+            color: #f8fafc;
+            line-height: 1.55;
+            margin: 0 0 0.55rem;
+        }
+
+        .event-impact small {
+            color: #cbd5e1;
+            font-weight: 700;
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -445,6 +497,7 @@ def hisse_bilgisi_getir(ticker: str, period: str, interval: str) -> dict:
         "cari_oran": info.get("currentRatio"),
         "sektor": info.get("sector"),
         "endustri": info.get("industry"),
+        "ulke": info.get("country") or ("Turkey" if ticker.upper().endswith(".IS") else ""),
         "piyasa_degeri": info.get("marketCap"),
         "borsa": info.get("exchange") or info.get("fullExchangeName") or "",
         "ozet": info.get("longBusinessSummary") or "Şirket özeti bulunamadı.",
@@ -1088,6 +1141,160 @@ def analist_beklentileri_goster(
         use_container_width=True,
         config={"displayModeBar": False, "scrollZoom": False},
     )
+
+
+def sonraki_ay_gunu(gun: int, ay_ekle: int = 0) -> pd.Timestamp:
+    bugun = pd.Timestamp.today().normalize()
+    yil = bugun.year + ((bugun.month + ay_ekle - 1) // 12)
+    ay = ((bugun.month + ay_ekle - 1) % 12) + 1
+    son_gun = pd.Period(f"{yil}-{ay:02d}").days_in_month
+    tarih = pd.Timestamp(year=yil, month=ay, day=min(gun, son_gun))
+    if tarih < bugun:
+        return sonraki_ay_gunu(gun, ay_ekle + 1)
+    return tarih
+
+
+def sonraki_hafta_gunu(hafta_gunu: int, hafta_ekle: int = 0) -> pd.Timestamp:
+    bugun = pd.Timestamp.today().normalize()
+    fark = (hafta_gunu - bugun.weekday()) % 7
+    return bugun + pd.Timedelta(days=fark + hafta_ekle * 7)
+
+
+def olay_etki_rengi(etki: str) -> str:
+    return {
+        "Pozitif": "#16a34a",
+        "Negatif": "#ef4444",
+        "Nötr": "#f59e0b",
+    }.get(etki, "#94a3b8")
+
+
+def olay_etki_ikon(etki: str) -> str:
+    return {
+        "Pozitif": "🟢",
+        "Negatif": "🔴",
+        "Nötr": "🟡",
+    }.get(etki, "🟡")
+
+
+def kritik_olaylar_uret(veri: dict) -> list[dict]:
+    ticker = veri["ticker"]
+    ulke = (veri.get("ulke") or "").lower()
+    endustri = (veri.get("endustri") or "").lower()
+    sektor = (veri.get("sektor") or "").lower()
+    bist_mi = ticker.endswith(".IS") or "turkey" in ulke
+
+    if bist_mi:
+        olaylar = [
+            {
+                "ad": "TCMB Faiz Kararı",
+                "tarih": sonraki_hafta_gunu(3, 2),
+                "durum": "Politika faizi ve karar metni takip edilir.",
+                "beklenti": "Piyasa beklentisi karar haftasında güncellenir.",
+                "etki": "Nötr",
+                "senaryo_ustu": "Beklentiden daha sıkı duruş, kur ve enflasyon beklentileri için olumlu; faiz hassas sektörlerde kısa vadeli baskı yaratabilir.",
+                "senaryo_alti": "Beklentiden gevşek duruş, kredi büyümesi ve iç talep için destekleyici; TL varlıklarda risk primi yaratabilir.",
+                "kaynak": "TCMB takvimi",
+            },
+            {
+                "ad": "TÜİK Enflasyon Verisi",
+                "tarih": sonraki_ay_gunu(3),
+                "durum": "Son açıklanan TÜFE ve ÜFE trendi izlenir.",
+                "beklenti": "Aylık/yıllık enflasyon beklentisi anket ve piyasa tahminleriyle güncellenir.",
+                "etki": "Nötr",
+                "senaryo_ustu": "Beklenti üstü enflasyon, iskonto oranlarını yukarı çekerek değerlemeleri baskılayabilir.",
+                "senaryo_alti": "Beklenti altı enflasyon, faiz indirimi beklentisini destekleyerek hisse çarpanlarını rahatlatabilir.",
+                "kaynak": "TÜİK veri takvimi",
+            },
+        ]
+
+        if "bank" in endustri or "financial" in sektor:
+            olaylar.append(
+                {
+                    "ad": "BDDK Bankacılık Sektörü Verileri",
+                    "tarih": sonraki_hafta_gunu(4),
+                    "durum": "Kredi büyümesi, mevduat kompozisyonu ve takipteki alacaklar izlenir.",
+                    "beklenti": "Sektör marjları ve aktif kalitesi beklentileriyle karşılaştırılır.",
+                    "etki": "Nötr",
+                    "senaryo_ustu": "Güçlü kredi büyümesi ve düşük takip oranı banka hisseleri için pozitif algılanabilir.",
+                    "senaryo_alti": "Aktif kalitesinde bozulma veya marj baskısı banka hisselerini negatif etkileyebilir.",
+                    "kaynak": "BDDK haftalık/aylık bülten",
+                }
+            )
+        if any(kelime in endustri for kelime in ["airline", "airport"]) or ticker in ["THYAO.IS", "PGSUS.IS"]:
+            olaylar.append(
+                {
+                    "ad": "DHMİ Yolcu ve Trafik Verileri",
+                    "tarih": sonraki_ay_gunu(10),
+                    "durum": "Yolcu sayısı, dış hat trafiği ve doluluk trendi izlenir.",
+                    "beklenti": "Sezonluk trafik ve kapasite beklentileriyle karşılaştırılır.",
+                    "etki": "Pozitif",
+                    "senaryo_ustu": "Beklentiden güçlü trafik, ciro ve kapasite kullanımını destekleyerek havacılık hisseleri için pozitif olabilir.",
+                    "senaryo_alti": "Zayıf trafik veya doluluk, gelir beklentilerini aşağı çekerek negatif fiyatlanabilir.",
+                    "kaynak": "DHMİ istatistikleri",
+                }
+            )
+    else:
+        olaylar = [
+            {
+                "ad": "FED Faiz Kararı",
+                "tarih": sonraki_hafta_gunu(2, 3),
+                "durum": "Fed fonlama faizi ve karar metni takip edilir.",
+                "beklenti": "Piyasa beklentisi vadeli faiz kontratlarıyla şekillenir.",
+                "etki": "Nötr",
+                "senaryo_ustu": "Beklentiden şahin duruş, büyüme hisselerinde değerleme baskısı yaratabilir.",
+                "senaryo_alti": "Beklentiden güvercin duruş, risk iştahı ve büyüme hisseleri için destekleyici olabilir.",
+                "kaynak": "FOMC takvimi",
+            },
+            {
+                "ad": "ABD Enflasyon (CPI)",
+                "tarih": sonraki_ay_gunu(13),
+                "durum": "Çekirdek ve manşet CPI trendi izlenir.",
+                "beklenti": "Konsensüs aylık/yıllık CPI beklentisiyle karşılaştırılır.",
+                "etki": "Nötr",
+                "senaryo_ustu": "Beklentiden yüksek CPI, faizlerin yüksek kalacağı algısıyla hisse piyasasını baskılayabilir.",
+                "senaryo_alti": "Beklentiden düşük CPI, faiz indirimi beklentisini artırarak pozitif etki yaratabilir.",
+                "kaynak": "ABD CPI takvimi",
+            },
+            {
+                "ad": "Tarım Dışı İstihdam",
+                "tarih": sonraki_hafta_gunu(4),
+                "durum": "İstihdam artışı, ücret büyümesi ve işsizlik oranı izlenir.",
+                "beklenti": "Konsensüs istihdam beklentisiyle karşılaştırılır.",
+                "etki": "Nötr",
+                "senaryo_ustu": "Çok güçlü veri, faiz baskısını artırabilir; döngüsel sektörlerde karışık etki yaratabilir.",
+                "senaryo_alti": "Zayıf veri, faiz indirimi beklentisini artırsa da büyüme endişesi doğurabilir.",
+                "kaynak": "BLS ekonomik takvimi",
+            },
+        ]
+
+    return sorted(olaylar, key=lambda olay: olay["tarih"])[:5]
+
+
+def kritik_tarihler_goster(veri: dict) -> None:
+    st.markdown("### Kritik Tarihler ve Stratejik Etki Analizi")
+    st.caption(
+        "Bu bölüm seçilen hissenin ülke ve faaliyet alanına göre kural tabanlı ekonomik/stratejik olayları listeler. "
+        "Tarih ve beklentiler resmi takvimlerle teyit edilmelidir."
+    )
+
+    for olay in kritik_olaylar_uret(veri):
+        etki = olay["etki"]
+        renk = olay_etki_rengi(etki)
+        tarih = olay["tarih"].strftime("%d.%m.%Y")
+        with st.expander(f"{olay_etki_ikon(etki)} {olay['ad']} - {tarih}", expanded=False):
+            st.markdown(
+                f"""
+                <div class="event-impact" style="border-color:{renk};">
+                    <span style="background:{renk};">{escape(etki)} Etki</span>
+                    <p><strong>Mevcut Durum:</strong> {escape(olay['durum'])}</p>
+                    <p><strong>Beklenti:</strong> {escape(olay['beklenti'])}</p>
+                    <p><strong>Senaryo A - Beklenti Üstü:</strong> {escape(olay['senaryo_ustu'])}</p>
+                    <p><strong>Senaryo B - Beklenti Altı:</strong> {escape(olay['senaryo_alti'])}</p>
+                    <small>Kaynak mantığı: {escape(olay['kaynak'])}</small>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 def puan_sinirla(deger: float) -> int:
@@ -2005,6 +2212,8 @@ analist_beklentileri_goster(
     kur,
     mobil_gorunum,
 )
+
+kritik_tarihler_goster(veri)
 
 st.markdown("### Finansal Oranlar")
 finansal_oran_bileseni(veri, analiz_sonucu)

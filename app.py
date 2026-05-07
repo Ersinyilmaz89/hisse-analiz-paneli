@@ -1108,6 +1108,23 @@ def ortalama(degerler: list[float | None]) -> float | None:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def temel_info_hizli_getir(ticker: str) -> dict:
+    info = yf.Ticker(ticker).info
+    return {
+        "ticker": ticker.upper(),
+        "shortName": info.get("shortName"),
+        "longName": info.get("longName"),
+        "sector": info.get("sector"),
+        "marketCap": info.get("marketCap"),
+        "currency": info.get("currency"),
+        "exchange": info.get("exchange") or info.get("fullExchangeName") or "",
+        "industry": info.get("industry"),
+        "website": info.get("website"),
+        "summary": info.get("longBusinessSummary"),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def temel_info_getir(ticker: str) -> dict:
     info = yf.Ticker(ticker).info
     fk, pd_dd = guvenilir_fk_pd_dd(ticker, info)
@@ -1218,7 +1235,7 @@ def rakipleri_bul(
     ticker = ticker.upper()
     oneri_listesi = RAKIP_ONERILERI.get(ticker, [])
     evren = [] if oneri_listesi else (BIST_EVRENI if ticker.endswith(".IS") else GLOBAL_EVRENI)
-    adaylar = list(dict.fromkeys(oneri_listesi + evren + GLOBAL_EVRENI + ANALIZ_EVRENI))
+    adaylar = list(dict.fromkeys(oneri_listesi + evren))
     rakipler = []
     ana_piyasa_degeri_usd = piyasa_degerini_usd_cevir(piyasa_degeri, para_birimi)
 
@@ -1226,7 +1243,7 @@ def rakipleri_bul(
         if aday == ticker:
             continue
         try:
-            info = temel_info_getir(aday)
+            info = temel_info_hizli_getir(aday)
         except Exception:
             continue
 
@@ -1255,6 +1272,8 @@ def rakipleri_bul(
         info["peer_rank_recommended"] = 0 if oneri_uyumu else 1
         info["peer_rank_sector"] = 0 if sektor_uyumu else 1
         rakipler.append(info)
+        if oneri_listesi and len(rakipler) >= 6:
+            break
 
     rakipler = sorted(
         rakipler,
@@ -1265,7 +1284,14 @@ def rakipleri_bul(
             -item.get("peer_rank_market_cap", 0),
         ),
     )
-    return rakipler[:3]
+    secilen_tickerlar = [rakip["ticker"] for rakip in rakipler[:3]]
+    detayli_rakipler = []
+    for secilen in secilen_tickerlar:
+        try:
+            detayli_rakipler.append(temel_info_getir(secilen))
+        except Exception:
+            continue
+    return detayli_rakipler
 
 
 def eksik_mi(*degerler) -> bool:
@@ -1412,7 +1438,10 @@ def analiz_motoru_calistir(veri: dict) -> dict:
     peer_pe_avg = ortalama([rakip.get("trailingPE") for rakip in rakipler])
     peer_pb_avg = ortalama([rakip.get("priceToBook") for rakip in rakipler])
     peer_dividend_avg = ortalama([rakip.get("dividendYield") for rakip in rakipler])
-    ana_gecmis = bes_yillik_gecmis_ortalamalari(veri["ticker"])
+    ana_gecmis = {
+        "roe_5y": veri["ozsermaye_karliligi"],
+        "revenue_growth_5y": veri["gelir_buyumesi"],
+    }
     hisse_puanlari, eksikler, aciklamalar = hisse_puanla(
         ana_info,
         peer_pe_avg,
@@ -1422,7 +1451,10 @@ def analiz_motoru_calistir(veri: dict) -> dict:
 
     rakip_puanlari = []
     for rakip in rakipler:
-        rakip_gecmis = bes_yillik_gecmis_ortalamalari(rakip["ticker"])
+        rakip_gecmis = {
+            "roe_5y": rakip.get("returnOnEquity"),
+            "revenue_growth_5y": rakip.get("revenueGrowth"),
+        }
         rakip_puan, _, _ = hisse_puanla(rakip, peer_pe_avg, peer_dividend_avg, rakip_gecmis)
         rakip_puanlari.append(rakip_puan)
 

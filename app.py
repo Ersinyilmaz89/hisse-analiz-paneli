@@ -150,6 +150,10 @@ st.markdown(
             height: 0 !important;
         }
 
+        .mobile-picker {
+            margin-bottom: 1rem;
+        }
+
         [data-testid="stSidebar"] {
             background: rgba(15, 23, 42, 0.96);
             border-right: 1px solid rgba(148, 163, 184, 0.24);
@@ -293,6 +297,14 @@ st.markdown(
         h1, h2, h3 { letter-spacing: 0; }
 
         @media (max-width: 768px) {
+            .mobile-picker {
+                margin-bottom: 0.85rem;
+            }
+
+            .desktop-sidebar-hint {
+                display: none;
+            }
+
             .block-container {
                 padding: 1rem 0.85rem 2rem 0.85rem;
                 max-width: 100%;
@@ -345,6 +357,12 @@ st.markdown(
             .stPlotlyChart {
                 margin-left: -0.15rem;
                 margin-right: -0.15rem;
+            }
+
+            iframe,
+            canvas,
+            svg {
+                max-width: 100% !important;
             }
         }
 
@@ -403,6 +421,9 @@ if "aktif_profil" not in st.session_state:
 
 if "ticker_secimi" not in st.session_state:
     st.session_state.ticker_secimi = None
+
+if "ticker_secimi_ana" not in st.session_state:
+    st.session_state.ticker_secimi_ana = None
 
 if "ticker_secimi_bekleyen" not in st.session_state:
     st.session_state.ticker_secimi_bekleyen = None
@@ -841,6 +862,7 @@ def favori_degistir(ticker: str) -> None:
 
 def ticker_ac(ticker: str) -> None:
     st.session_state.ticker_secimi_bekleyen = ticker.upper()
+    st.session_state.ticker_secimi_ana = ticker.upper()
     st.rerun()
 
 
@@ -2058,9 +2080,10 @@ with st.sidebar:
 
     if st.session_state.ticker_secimi_bekleyen:
         st.session_state.ticker_secimi = st.session_state.ticker_secimi_bekleyen
+        st.session_state.ticker_secimi_ana = st.session_state.ticker_secimi_bekleyen
         st.session_state.ticker_secimi_bekleyen = None
 
-    ticker = st.selectbox(
+    sidebar_ticker = st.selectbox(
         "Hisse kodu",
         options=ONERILEN_HISSELER,
         index=None,
@@ -2069,7 +2092,7 @@ with st.sidebar:
         key="ticker_secimi",
     )
 
-    aktif_aday = str(ticker).strip().upper() if ticker else ""
+    aktif_aday = str(sidebar_ticker).strip().upper() if sidebar_ticker else ""
     buton_col, favori_col = st.columns([0.78, 0.22])
     getir = buton_col.button("Verileri Getir", type="primary", use_container_width=True)
 
@@ -2110,8 +2133,21 @@ mobil_gorunum = st.toggle(
 
 st.title("Hisse Analiz Paneli")
 
+st.markdown('<div class="mobile-picker">', unsafe_allow_html=True)
+main_ticker = st.selectbox(
+    "Hisse kodu",
+    options=ONERILEN_HISSELER,
+    index=None,
+    accept_new_options=True,
+    placeholder="Hisse seçiniz",
+    key="ticker_secimi_ana",
+)
+st.markdown("</div>", unsafe_allow_html=True)
+
+ticker = main_ticker or sidebar_ticker
+
 if not ticker or not str(ticker).strip():
-    st.info("Başlamak için sol taraftan bir hisse kodu girin.")
+    st.info("Başlamak için üstteki alandan veya sol panelden bir hisse kodu girin.")
     st.stop()
 
 

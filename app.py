@@ -560,6 +560,41 @@ if "ticker_secimi_bekleyen" not in st.session_state:
 if "sirket_ozeti_goster" not in st.session_state:
     st.session_state.sirket_ozeti_goster = True
 
+if "erisim_onaylandi" not in st.session_state:
+    st.session_state.erisim_onaylandi = False
+
+
+def gizli_deger_getir(anahtar: str) -> str | None:
+    try:
+        deger = st.secrets.get(anahtar)
+        if deger:
+            return str(deger)
+    except Exception:
+        pass
+    deger = os.getenv(anahtar)
+    return str(deger) if deger else None
+
+
+def erisim_kapisi_goster() -> None:
+    uygulama_sifresi = gizli_deger_getir("APP_PASSWORD")
+    if not uygulama_sifresi or st.session_state.erisim_onaylandi:
+        return
+
+    st.title("Hisse Analiz Paneli")
+    st.info("Bu uygulama ozel kullanim icin sifre korumalidir.")
+    girilen_sifre = st.text_input("Sifre", type="password")
+    if st.button("Giris Yap", type="primary"):
+        if girilen_sifre == uygulama_sifresi:
+            st.session_state.erisim_onaylandi = True
+            st.rerun()
+        else:
+            st.error("Sifre hatali.")
+    st.stop()
+
+
+erisim_kapisi_goster()
+
+
 def db_baglan() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     baglanti = sqlite3.connect(DB_PATH)
@@ -1846,20 +1881,21 @@ def ai_stratejik_analiz_goster(veri: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
-        st.markdown(
-            f"""
-            <div class="ai-grid">
-                {ai_kart_html("1 Haftalik", sonuc.get("bir_hafta", {}))}
-                {ai_kart_html("1 Aylik", sonuc.get("bir_ay", {}))}
-                {ai_kart_html("1 Yillik", sonuc.get("bir_yil", {}))}
-            </div>
-            <div class="ai-basis">
-                <strong>Analiz Dayanagi</strong><br>
-                {escape(str(sonuc.get("analiz_dayanagi") or "Veri yok"))}
-            </div>
-            """,
-            unsafe_allow_html=True,
+        ai_html = "".join(
+            [
+                '<div class="ai-grid">',
+                ai_kart_html("1 Haftalik", sonuc.get("bir_hafta", {})),
+                ai_kart_html("1 Aylik", sonuc.get("bir_ay", {})),
+                ai_kart_html("1 Yillik", sonuc.get("bir_yil", {})),
+                "</div>",
+                '<div class="ai-basis">',
+                "<strong>Analiz Dayanagi</strong><br>",
+                escape(str(sonuc.get("analiz_dayanagi") or "Veri yok")),
+                "</div>",
+            ]
         )
+        ai_html = re.sub(r"\n\s+<", "\n<", ai_html).strip()
+        st.markdown(ai_html, unsafe_allow_html=True)
 
 
 def puan_sinirla(deger: float) -> int:

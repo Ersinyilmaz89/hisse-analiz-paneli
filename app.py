@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 import sqlite3
 import textwrap
@@ -153,6 +154,38 @@ USD_CEVRIMLERI = {
     "GBP": {"ticker": "GBPUSD=X", "operation": "multiply"},
     "AUD": {"ticker": "AUDUSD=X", "operation": "multiply"},
     "NZD": {"ticker": "NZDUSD=X", "operation": "multiply"},
+}
+
+EMTIA_HARITASI = {
+    "TUPRS.IS": [("Brent Petrol", "BZ=F"), ("WTI Petrol", "CL=F"), ("Isitma Yagi", "HO=F")],
+    "EREGL.IS": [("Demir Cevheri", "TIO=F"), ("Celik Vadeli", "HRC=F"), ("Kok Komuru", "MTF=F")],
+    "KRDMD.IS": [("Demir Cevheri", "TIO=F"), ("Celik Vadeli", "HRC=F")],
+    "THYAO.IS": [("Jet Yakit Proxy", "HO=F"), ("Brent Petrol", "BZ=F"), ("USD/TRY", "USDTRY=X")],
+    "PGSUS.IS": [("Jet Yakit Proxy", "HO=F"), ("Brent Petrol", "BZ=F"), ("USD/TRY", "USDTRY=X")],
+    "SISE.IS": [("Dogal Gaz", "NG=F"), ("Soda Kulu Proxy", "TROX"), ("USD/TRY", "USDTRY=X")],
+    "FROTO.IS": [("Aluminyum", "ALI=F"), ("Bakir", "HG=F"), ("USD/TRY", "USDTRY=X")],
+    "TOASO.IS": [("Aluminyum", "ALI=F"), ("Bakir", "HG=F"), ("USD/TRY", "USDTRY=X")],
+}
+
+SEKTOR_EMTIA_HARITASI = [
+    (["oil", "gas", "energy", "refining"], [("Brent Petrol", "BZ=F"), ("WTI Petrol", "CL=F")]),
+    (["airline", "airport", "aviation"], [("Jet Yakit Proxy", "HO=F"), ("Brent Petrol", "BZ=F")]),
+    (["steel", "iron", "metal"], [("Demir Cevheri", "TIO=F"), ("Bakir", "HG=F")]),
+    (["auto", "automotive", "vehicle"], [("Aluminyum", "ALI=F"), ("Bakir", "HG=F")]),
+    (["bank", "financial"], [("ABD 10Y Tahvil", "^TNX"), ("USD/TRY", "USDTRY=X")]),
+]
+
+MAKRO_VERI = {
+    "Turkey": {
+        "faiz": "TCMB politika faizi: uygulamada manuel/API entegrasyonu ile teyit edilmeli",
+        "enflasyon": "TUIK yillik enflasyon: uygulamada manuel/API entegrasyonu ile teyit edilmeli",
+        "not": "Turkiye hisselerinde kur, faiz ve enflasyon iskonto oranini dogrudan etkiler.",
+    },
+    "United States": {
+        "faiz": "FED hedef faiz araligi: resmi takvim/API ile teyit edilmeli",
+        "enflasyon": "ABD CPI yillik enflasyon: resmi veri/API ile teyit edilmeli",
+        "not": "ABD hisselerinde faiz patikasi iskonto oranini ve carpani etkiler.",
+    },
 }
 
 DB_PATH = Path("data") / "profiles.db"
@@ -1553,6 +1586,282 @@ def kritik_tarihler_goster(veri: dict) -> None:
             )
 
 
+def kritik_emtialari_sec(veri: dict) -> list[tuple[str, str]]:
+    ticker = veri["ticker"].upper()
+    if ticker in EMTIA_HARITASI:
+        return EMTIA_HARITASI[ticker]
+
+    metin = " ".join(
+        [
+            metin_norm(veri.get("sektor")),
+            metin_norm(veri.get("endustri")),
+            metin_norm(veri.get("sirket_adi")),
+        ]
+    )
+    for anahtarlar, emtialar in SEKTOR_EMTIA_HARITASI:
+        if any(anahtar in metin for anahtar in anahtarlar):
+            return emtialar
+    return [("ABD 10Y Tahvil", "^TNX"), ("Dolar Endeksi", "DX-Y.NYB")]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def emtia_snapshot_getir(semboller: tuple[tuple[str, str], ...]) -> list[dict]:
+    sonuc = []
+    for ad, sembol in semboller:
+        try:
+            gecmis = yf.Ticker(sembol).history(period="1mo", interval="1d")
+            kapanis = gecmis["Close"].dropna() if not gecmis.empty else pd.Series(dtype=float)
+            son = float(kapanis.iloc[-1]) if not kapanis.empty else None
+            ilk = float(kapanis.iloc[0]) if len(kapanis) > 1 else None
+            degisim = ((son - ilk) / ilk) * 100 if son is not None and ilk else None
+        except Exception:
+            son = None
+            degisim = None
+        sonuc.append(
+            {
+                "ad": ad,
+                "sembol": sembol,
+                "son": son,
+                "aylik_degisim": degisim,
+            }
+        )
+    return sonuc
+
+
+def makro_veri_getir(ulke: str | None) -> dict:
+    ulke = ulke or ""
+    if "turkey" in ulke.lower() or "turkiye" in ulke.lower():
+        return MAKRO_VERI["Turkey"]
+    if "united states" in ulke.lower() or "usa" in ulke.lower():
+        return MAKRO_VERI["United States"]
+    return {
+        "faiz": "Ulke politika faizi: veri kaynagi bagli degil",
+        "enflasyon": "Ulke enflasyonu: veri kaynagi bagli degil",
+        "not": "Makro veri resmi kaynakla teyit edilmelidir.",
+    }
+
+
+def openai_api_key_getir() -> str | None:
+    try:
+        secret_key = st.secrets.get("OPENAI_API_KEY")
+        if secret_key:
+            return str(secret_key)
+    except Exception:
+        pass
+    return os.getenv("OPENAI_API_KEY")
+
+
+def ai_prompt_hazirla(veri: dict, emtialar: list[dict], makro: dict) -> str:
+    emtia_satirlari = "\n".join(
+        [
+            f"- {item['ad']} ({item['sembol']}): son={sayi_formatla(item['son'])}, 1 aylik degisim={yuzde_formatla(item['aylik_degisim'])}"
+            for item in emtialar
+        ]
+    )
+    return f"""
+Hisse Bilgileri:
+- Ticker: {veri['ticker']}
+- Sirket: {veri['sirket_adi']}
+- Ulke: {veri.get('ulke') or 'Veri yok'}
+- Sektor: {veri.get('sektor') or 'Veri yok'}
+- Endustri: {veri.get('endustri') or 'Veri yok'}
+- Mevcut fiyat: {sayi_formatla(veri.get('guncel_fiyat'), veri.get('para_birimi') or '')}
+- F/K: {oran_formatla(veri.get('fk'))}
+- PD/DD: {oran_formatla(veri.get('pd_dd'))}
+- Borc/Ozsermaye: {oran_formatla(veri.get('borc_ozsermaye'))}
+- Cari oran: {oran_formatla(veri.get('cari_oran'))}
+
+Dis Veriler / Kritik Emtialar:
+{emtia_satirlari or '- Veri yok'}
+
+Makro Veri:
+- Faiz: {makro.get('faiz')}
+- Enflasyon: {makro.get('enflasyon')}
+- Not: {makro.get('not')}
+
+Gorev:
+Asagidaki 3 zaman dilimi icin net bir stratejik analiz uret:
+1) 1 Haftalik: Haber akisi, teknik momentum ve haftalik ekonomik takvim etkileri.
+2) 1 Aylik: Sektorel trendler ve beklenen emtia fiyat hareketleri.
+3) 1 Yillik: Sirket yatirim projeleri, ulke buyume beklentisi ve enflasyon/faiz korelasyonu.
+
+Ciktiyi yalnizca gecerli JSON olarak ver. Markdown kullanma.
+Format:
+{{
+  "bir_hafta": {{"tahmin": "...", "guven_skoru": 0, "neden": "...", "baskin_dayanak": "..."}},
+  "bir_ay": {{"tahmin": "...", "guven_skoru": 0, "neden": "...", "baskin_dayanak": "..."}},
+  "bir_yil": {{"tahmin": "...", "guven_skoru": 0, "neden": "...", "baskin_dayanak": "..."}},
+  "analiz_dayanagi": "..."
+}}
+"""
+
+
+def openai_analiz_iste(prompt: str) -> dict:
+    api_key = openai_api_key_getir()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY bulunamadi. Streamlit secrets veya ortam degiskeni olarak ekleyin.")
+
+    payload = {
+        "model": os.getenv("OPENAI_MODEL", "gpt-4.1"),
+        "instructions": (
+            "Sen profesyonel bir global yatirim stratejistisin. "
+            "Belirsiz ifadelerden kacin, eldeki somut ekonomik verilerle hisse fiyati arasinda "
+            "mantiksal kopruler kur. Ornek: Petrol artisi rafineri marjini hangi yonde etkiler, "
+            "bunu net ifade et. Yatirim tavsiyesi verme; riskleri belirt."
+        ),
+        "input": prompt,
+        "max_output_tokens": 1200,
+    }
+    request = Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=45) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    metin = data.get("output_text")
+    if not metin:
+        parcalar = []
+        for item in data.get("output", []):
+            for content in item.get("content", []):
+                if content.get("type") in ["output_text", "text"]:
+                    parcalar.append(content.get("text", ""))
+        metin = "\n".join(parcalar)
+    return ai_yanitini_ayikla(metin or "")
+
+
+def ai_yanitini_ayikla(metin: str) -> dict:
+    temiz = metin.strip()
+    temiz = re.sub(r"^```(?:json)?", "", temiz).strip()
+    temiz = re.sub(r"```$", "", temiz).strip()
+    try:
+        return json.loads(temiz)
+    except Exception:
+        return {
+            "bir_hafta": {
+                "tahmin": "Analiz metni ayrisamadi",
+                "guven_skoru": 0,
+                "neden": temiz[:500] or "Model yaniti bos geldi.",
+                "baskin_dayanak": "Veri yok",
+            },
+            "bir_ay": {"tahmin": "Veri yok", "guven_skoru": 0, "neden": "Veri yok", "baskin_dayanak": "Veri yok"},
+            "bir_yil": {"tahmin": "Veri yok", "guven_skoru": 0, "neden": "Veri yok", "baskin_dayanak": "Veri yok"},
+            "analiz_dayanagi": "Model yaniti JSON formatinda alinamadi.",
+        }
+
+
+def ai_kart_html(baslik: str, veri: dict) -> str:
+    guven = puan_sinirla(veri.get("guven_skoru", 0))
+    return f"""
+    <div class="ai-card">
+        <div class="ai-card-top">
+            <span>{escape(baslik)}</span>
+            <strong>%{guven}</strong>
+        </div>
+        <h4>{escape(str(veri.get('tahmin') or 'Veri yok'))}</h4>
+        <p>{escape(str(veri.get('neden') or 'Veri yok'))}</p>
+        <small>Dayanak: {escape(str(veri.get('baskin_dayanak') or 'Veri yok'))}</small>
+    </div>
+    """
+
+
+def ai_stratejik_analiz_goster(veri: dict) -> None:
+    st.markdown("### AI Stratejik Analiz")
+    st.caption("Analiz yalnizca butona bastiginizda calisir; normal sayfa acilisini yavaslatmaz.")
+
+    if st.button("Yapay Zeka Analizini Baslat", type="primary", use_container_width=False):
+        with st.spinner("AI stratejik analiz hazirlaniyor..."):
+            emtialar = emtia_snapshot_getir(tuple(kritik_emtialari_sec(veri)))
+            makro = makro_veri_getir(veri.get("ulke"))
+            prompt = ai_prompt_hazirla(veri, emtialar, makro)
+            try:
+                sonuc = openai_analiz_iste(prompt)
+            except Exception as hata:
+                st.warning(str(hata))
+                with st.expander("AI'ya gonderilecek prompt", expanded=False):
+                    st.code(prompt, language="text")
+                return
+
+        st.markdown(
+            """
+            <style>
+                .ai-grid {
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    gap: 0.9rem;
+                    margin-top: 0.8rem;
+                }
+                .ai-card {
+                    background: rgba(15, 23, 42, 0.74);
+                    border: 1px solid rgba(56, 189, 248, 0.24);
+                    border-radius: 8px;
+                    padding: 1rem;
+                    min-height: 220px;
+                }
+                .ai-card-top {
+                    display: flex;
+                    justify-content: space-between;
+                    gap: 0.75rem;
+                    color: #cbd5e1;
+                    font-size: 0.82rem;
+                    font-weight: 800;
+                }
+                .ai-card-top strong {
+                    color: #0f172a;
+                    background: #67e8f9;
+                    border-radius: 999px;
+                    padding: 0.12rem 0.5rem;
+                }
+                .ai-card h4 {
+                    color: #f8fafc;
+                    margin: 0.8rem 0 0.55rem;
+                    font-size: 1.05rem;
+                }
+                .ai-card p {
+                    color: #dbeafe;
+                    line-height: 1.48;
+                    margin: 0 0 0.75rem;
+                }
+                .ai-card small {
+                    color: #93c5fd;
+                    font-weight: 800;
+                }
+                .ai-basis {
+                    margin-top: 0.9rem;
+                    padding: 0.85rem 1rem;
+                    border-radius: 8px;
+                    background: rgba(2, 6, 23, 0.44);
+                    border: 1px solid rgba(148, 163, 184, 0.18);
+                    color: #dbeafe;
+                }
+                @media (max-width: 768px) {
+                    .ai-grid { grid-template-columns: 1fr; }
+                }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="ai-grid">
+                {ai_kart_html("1 Haftalik", sonuc.get("bir_hafta", {}))}
+                {ai_kart_html("1 Aylik", sonuc.get("bir_ay", {}))}
+                {ai_kart_html("1 Yillik", sonuc.get("bir_yil", {}))}
+            </div>
+            <div class="ai-basis">
+                <strong>Analiz Dayanagi</strong><br>
+                {escape(str(sonuc.get("analiz_dayanagi") or "Veri yok"))}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def puan_sinirla(deger: float) -> int:
     if deger is None or pd.isna(deger) or not math.isfinite(float(deger)):
         return 0
@@ -2512,6 +2821,8 @@ analist_beklentileri_goster(
     mobil_gorunum,
     analist_tahminleri,
 )
+
+ai_stratejik_analiz_goster(veri)
 
 kritik_tarihler_goster(veri)
 

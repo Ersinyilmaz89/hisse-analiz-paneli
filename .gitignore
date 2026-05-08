@@ -4,3 +4,4 @@ __pycache__/
 .deps/
 data/*.db
 data/*.db-*
+.streamlit/secrets.toml

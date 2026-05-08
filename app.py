@@ -158,14 +158,24 @@ st.markdown(
             color: #f8fafc;
         }
 
-        [data-testid="stToolbar"],
         [data-testid="stDecoration"],
         [data-testid="stStatusWidget"],
         #MainMenu,
-        header,
         footer {
             visibility: hidden !important;
             height: 0 !important;
+        }
+
+        header {
+            background: transparent !important;
+        }
+
+        [data-testid="stToolbar"] {
+            opacity: 0.18;
+        }
+
+        [data-testid="stToolbar"]:hover {
+            opacity: 1;
         }
 
         .mobile-picker {

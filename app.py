@@ -62,7 +62,8 @@ ANALIZ_EVRENI = sorted(
         ONERILEN_HISSELER
         + [
             "PATEK.IS", "MIATK.IS", "ASTOR.IS", "KONTR.IS", "CWENE.IS",
-            "FROTO.IS", "TOASO.IS", "TTRAK.IS", "TCELL.IS", "TTKOM.IS",
+            "FROTO.IS", "TOASO.IS", "TTRAK.IS", "OTKAR.IS", "ASUZU.IS",
+            "KARSN.IS", "DOAS.IS", "TCELL.IS", "TTKOM.IS",
             "SAHOL.IS", "MGROS.IS", "ULKER.IS", "PETKM.IS", "SASA.IS",
             "KRDMD.IS", "ISCTR.IS", "HALKB.IS", "VAKBN.IS", "ENKAI.IS",
             "KOZAL.IS", "PGSUS.IS", "DOAS.IS", "AEFES.IS", "CCOLA.IS",
@@ -91,6 +92,12 @@ RAKIP_ONERILERI = {
     "SISE.IS": ["OI", "GLW", "GPK", "OC", "5201.T", "5202.T", "VRLA.PA"],
     "KCHOL.IS": ["SAHOL.IS", "BRK-B", "EXO.MI", "EXOR.AS", "IEP", "JARD.L"],
     "SAHOL.IS": ["KCHOL.IS", "BRK-B", "EXO.MI", "EXOR.AS", "IEP", "JARD.L"],
+    "FROTO.IS": ["TOASO.IS", "OTKAR.IS", "ASUZU.IS", "KARSN.IS", "DOAS.IS", "TTRAK.IS", "STLA", "F", "GM", "TM"],
+    "TOASO.IS": ["FROTO.IS", "OTKAR.IS", "ASUZU.IS", "KARSN.IS", "DOAS.IS", "TTRAK.IS", "STLA", "F", "GM", "TM"],
+    "OTKAR.IS": ["FROTO.IS", "TOASO.IS", "ASUZU.IS", "KARSN.IS", "TTRAK.IS", "OSK", "PCAR", "TEX"],
+    "ASUZU.IS": ["FROTO.IS", "TOASO.IS", "OTKAR.IS", "KARSN.IS", "TTRAK.IS", "OSK", "PCAR", "TEX"],
+    "KARSN.IS": ["FROTO.IS", "TOASO.IS", "OTKAR.IS", "ASUZU.IS", "TTRAK.IS", "STLA", "F", "GM"],
+    "TTRAK.IS": ["FROTO.IS", "TOASO.IS", "OTKAR.IS", "ASUZU.IS", "KARSN.IS", "DE", "AGCO", "CNH"],
 }
 
 RAKIP_ANAHTAR_KELIMELERI = {
@@ -101,6 +108,12 @@ RAKIP_ANAHTAR_KELIMELERI = {
     "SISE.IS": ["glass", "container", "packaging", "materials", "building products"],
     "KCHOL.IS": ["holding", "conglomerate", "diversified"],
     "SAHOL.IS": ["holding", "conglomerate", "diversified"],
+    "FROTO.IS": ["auto", "automotive", "vehicle", "truck", "commercial"],
+    "TOASO.IS": ["auto", "automotive", "vehicle", "truck", "commercial"],
+    "OTKAR.IS": ["auto", "automotive", "vehicle", "truck", "commercial", "bus"],
+    "ASUZU.IS": ["auto", "automotive", "vehicle", "truck", "commercial", "bus"],
+    "KARSN.IS": ["auto", "automotive", "vehicle", "truck", "commercial", "bus"],
+    "TTRAK.IS": ["machinery", "tractor", "agricultural", "farm"],
 }
 
 ANALIST_KARNESI = [
@@ -873,18 +886,12 @@ def hisse_basi_oran_hesapla(ticker: str, info: dict) -> tuple[float | None, floa
     fiyat = pozitif_sayi(info.get("currentPrice") or info.get("regularMarketPrice"))
     eps = pozitif_sayi(info.get("trailingEps"))
     defter_degeri = pozitif_sayi(info.get("bookValue"))
-    para_birimi = info.get("currency") or ""
 
     if not fiyat:
         return None, None
 
-    hesap_fiyati = fiyat
-    if ticker.upper().endswith(".IS") and para_birimi != "USD" and para_birimi in USD_CEVRIMLERI:
-        kur, _ = kur_verisi_getir(para_birimi, "5d", "1d")
-        hesap_fiyati = usd_degere_cevir(fiyat, kur, para_birimi) or fiyat
-
-    fk = hesap_fiyati / eps if eps else None
-    pd_dd = hesap_fiyati / defter_degeri if defter_degeri else None
+    fk = fiyat / eps if eps else None
+    pd_dd = fiyat / defter_degeri if defter_degeri else None
     return fk, pd_dd
 
 
@@ -1740,14 +1747,35 @@ def rakipleri_bul(
             -item.get("peer_rank_market_cap", 0),
         ),
     )
-    secilen_tickerlar = [rakip["ticker"] for rakip in rakipler[:3]]
+    mesafe_haritasi = {rakip["ticker"]: rakip.get("market_cap_distance", 99) for rakip in rakipler}
+    secim_havuzu = [rakip["ticker"] for rakip in rakipler[:8]]
     detayli_rakipler = []
-    for secilen in secilen_tickerlar:
+    for secilen in secim_havuzu:
         try:
-            detayli_rakipler.append(temel_info_getir(secilen))
+            detay = temel_info_getir(secilen)
+            detay["trailingPE"] = oran_temizle(detay.get("trailingPE"), "fk")
+            detay["priceToBook"] = oran_temizle(detay.get("priceToBook"), "pd_dd")
+            detay["dividendYield"] = oran_temizle(detay.get("dividendYield"), "temettu")
+            detay["peer_data_score"] = sum(
+                deger is not None
+                for deger in [
+                    detay.get("trailingPE"),
+                    detay.get("priceToBook"),
+                    detay.get("dividendYield"),
+                ]
+            )
+            detay["market_cap_distance"] = mesafe_haritasi.get(secilen, 99)
+            detayli_rakipler.append(detay)
         except Exception:
             continue
-    return detayli_rakipler
+    detayli_rakipler = sorted(
+        detayli_rakipler,
+        key=lambda item: (
+            -item.get("peer_data_score", 0),
+            item.get("market_cap_distance", 99),
+        ),
+    )
+    return detayli_rakipler[:3]
 
 
 def eksik_mi(*degerler) -> bool:
@@ -2298,6 +2326,7 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
         </div>
         """
     )
+    html = re.sub(r"\n\s+<", "\n<", html).strip()
     st.markdown(html, unsafe_allow_html=True)
 
 

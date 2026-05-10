@@ -681,6 +681,9 @@ def hisse_bilgisi_getir(ticker: str, period: str, interval: str) -> dict:
         "onceki_kapanis": info.get("previousClose"),
         "fk": fk,
         "pd_dd": pd_dd,
+        "firma_degeri_satislar": info.get("enterpriseToRevenue"),
+        "firma_degeri_favok": info.get("enterpriseToEbitda"),
+        "favok": info.get("ebitda"),
         "temettu_verimi": info.get("dividendYield"),
         "temettu_tutari": info.get("dividendRate"),
         "payout_orani": info.get("payoutRatio"),
@@ -911,6 +914,29 @@ def oran_gecerli_mi(deger: float | None, oran_tipi: str) -> bool:
 
 def oran_temizle(deger: float | None, oran_tipi: str) -> float | None:
     return float(deger) if oran_gecerli_mi(deger, oran_tipi) else None
+
+
+def carpan_temizle(deger: float | None, ust_sinir: float = 100) -> float | None:
+    deger = pozitif_sayi(deger)
+    if deger is None or deger >= ust_sinir:
+        return None
+    return deger
+
+
+def para_formatla(deger: float | None, para_birimi: str = "") -> str:
+    deger = pozitif_sayi(deger)
+    if deger is None:
+        return "Veri yok"
+    mutlak = abs(deger)
+    if mutlak >= 1_000_000_000_000:
+        metin = f"{deger / 1_000_000_000_000:.2f}T"
+    elif mutlak >= 1_000_000_000:
+        metin = f"{deger / 1_000_000_000:.2f}B"
+    elif mutlak >= 1_000_000:
+        metin = f"{deger / 1_000_000:.2f}M"
+    else:
+        metin = f"{deger:,.0f}"
+    return f"{metin} {para_birimi}".strip()
 
 
 def sapma_orani(aday: float | None, referans: float | None) -> float | None:
@@ -2222,6 +2248,9 @@ def temel_info_getir(ticker: str) -> dict:
         "currentPrice": info.get("currentPrice") or info.get("regularMarketPrice"),
         "targetMedianPrice": info.get("targetMedianPrice"),
         "priceToBook": pd_dd,
+        "enterpriseToRevenue": info.get("enterpriseToRevenue"),
+        "enterpriseToEbitda": info.get("enterpriseToEbitda"),
+        "ebitda": info.get("ebitda"),
         "earningsGrowth": info.get("earningsGrowth"),
         "earningsQuarterlyGrowth": info.get("earningsQuarterlyGrowth"),
         "returnOnEquity": info.get("returnOnEquity"),
@@ -2375,12 +2404,16 @@ def rakipleri_bul(
             detay = temel_info_getir(secilen)
             detay["trailingPE"] = oran_temizle(detay.get("trailingPE"), "fk")
             detay["priceToBook"] = oran_temizle(detay.get("priceToBook"), "pd_dd")
+            detay["enterpriseToRevenue"] = carpan_temizle(detay.get("enterpriseToRevenue"))
+            detay["enterpriseToEbitda"] = carpan_temizle(detay.get("enterpriseToEbitda"))
             detay["dividendYield"] = oran_temizle(detay.get("dividendYield"), "temettu")
             detay["peer_data_score"] = sum(
                 deger is not None
                 for deger in [
                     detay.get("trailingPE"),
                     detay.get("priceToBook"),
+                    detay.get("enterpriseToRevenue"),
+                    detay.get("enterpriseToEbitda"),
                     detay.get("dividendYield"),
                 ]
             )
@@ -2523,6 +2556,9 @@ def analiz_motoru_calistir(veri: dict) -> dict:
         "currentRatio": veri["cari_oran"],
         "dividendYield": oran_temizle(veri["temettu_verimi"], "temettu"),
         "payoutRatio": veri["payout_orani"],
+        "enterpriseToRevenue": veri["firma_degeri_satislar"],
+        "enterpriseToEbitda": veri["firma_degeri_favok"],
+        "ebitda": veri["favok"],
         "exchange": veri["borsa"],
         "industry": veri["endustri"],
         "currency": veri["para_birimi"],
@@ -2537,10 +2573,14 @@ def analiz_motoru_calistir(veri: dict) -> dict:
     for rakip in rakipler:
         rakip["trailingPE"] = oran_temizle(rakip.get("trailingPE"), "fk")
         rakip["priceToBook"] = oran_temizle(rakip.get("priceToBook"), "pd_dd")
+        rakip["enterpriseToRevenue"] = carpan_temizle(rakip.get("enterpriseToRevenue"))
+        rakip["enterpriseToEbitda"] = carpan_temizle(rakip.get("enterpriseToEbitda"))
         rakip["dividendYield"] = oran_temizle(rakip.get("dividendYield"), "temettu")
 
     peer_pe_avg = ortalama([rakip.get("trailingPE") for rakip in rakipler])
     peer_pb_avg = ortalama([rakip.get("priceToBook") for rakip in rakipler])
+    peer_ev_sales_avg = ortalama([rakip.get("enterpriseToRevenue") for rakip in rakipler])
+    peer_ev_ebitda_avg = ortalama([rakip.get("enterpriseToEbitda") for rakip in rakipler])
     peer_dividend_avg = ortalama([rakip.get("dividendYield") for rakip in rakipler])
     ana_gecmis = {
         "roe_5y": veri["ozsermaye_karliligi"],
@@ -2582,6 +2622,10 @@ def analiz_motoru_calistir(veri: dict) -> dict:
                     "summary": rakip.get("summary"),
                     "fk": rakip.get("trailingPE"),
                     "pd_dd": rakip.get("priceToBook"),
+                    "fd_satislar": rakip.get("enterpriseToRevenue"),
+                    "fd_favok": rakip.get("enterpriseToEbitda"),
+                    "favok": rakip.get("ebitda"),
+                    "currency": rakip.get("currency"),
                     "temettu": rakip.get("dividendYield"),
                 }
                 for rakip in rakipler
@@ -2589,6 +2633,8 @@ def analiz_motoru_calistir(veri: dict) -> dict:
             "averages": {
                 "fk": peer_pe_avg,
                 "pd_dd": peer_pb_avg,
+                "fd_satislar": peer_ev_sales_avg,
+                "fd_favok": peer_ev_ebitda_avg,
                 "temettu": peer_dividend_avg,
             },
         },
@@ -2664,6 +2710,46 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
             "direction": "Düşük PD/DD, varlık bazlı değerleme açısından daha ucuz görünebilir.",
         },
         {
+            "key": "fd_satislar",
+            "score_key": "Değerleme",
+            "label": "FD/Satışlar",
+            "value_raw": carpan_temizle(veri["firma_degeri_satislar"]),
+            "value": oran_formatla(carpan_temizle(veri["firma_degeri_satislar"])),
+            "peer_raw": averages.get("fd_satislar"),
+            "peer": oran_formatla(averages.get("fd_satislar")),
+            "peer_values": [oran_formatla(carpan_temizle(peer.get("fd_satislar"))) for peer in competitor_items],
+            "meaning": "Firma Değeri/Satışlar oranı, şirketin borç dahil toplam firma değerinin yıllık satışlarına kaç kat olduğunu gösterir.",
+            "direction": "Düşük FD/Satışlar, benzer gelir ölçeğine göre daha iskontolu değerlemeye işaret edebilir.",
+        },
+        {
+            "key": "fd_favok",
+            "score_key": "Değerleme",
+            "label": "FD/FAVÖK",
+            "value_raw": carpan_temizle(veri["firma_degeri_favok"]),
+            "value": oran_formatla(carpan_temizle(veri["firma_degeri_favok"])),
+            "peer_raw": averages.get("fd_favok"),
+            "peer": oran_formatla(averages.get("fd_favok")),
+            "peer_values": [oran_formatla(carpan_temizle(peer.get("fd_favok"))) for peer in competitor_items],
+            "meaning": "Firma Değeri/FAVÖK oranı, şirketin operasyonel nakit yaratma gücüne göre kaç kat değer gördüğünü gösterir.",
+            "direction": "Düşük FD/FAVÖK, operasyonel karlılığa göre daha ucuz değerlemeye işaret edebilir.",
+        },
+        {
+            "key": "favok",
+            "score_key": "Değerleme",
+            "label": "FAVÖK",
+            "value_raw": pozitif_sayi(veri["favok"]),
+            "value": para_formatla(veri["favok"], veri.get("para_birimi") or ""),
+            "peer_raw": None,
+            "peer": "Veri yok",
+            "peer_values": [
+                para_formatla(peer.get("favok"), peer.get("currency") or "")
+                for peer in competitor_items
+            ],
+            "meaning": "FAVÖK, faiz, amortisman ve vergi öncesi operasyonel karlılığı gösterir.",
+            "direction": "FAVÖK tek başına ucuz/pahalı demez; FD/FAVÖK ile birlikte okunması daha anlamlıdır.",
+            "compare": False,
+        },
+        {
             "key": "temettu",
             "score_key": "Temettü",
             "label": "Temettü",
@@ -2696,12 +2782,15 @@ def finansal_oran_bileseni(veri: dict, analiz_sonucu: dict) -> None:
         while len(peer_cells) < 3:
             peer_cells.append("Veri yok")
 
-        if value_raw is None or peer_raw is None or pd.isna(value_raw) or pd.isna(peer_raw):
+        if not oran.get("compare", True):
+            comparison = f"Hisse değeri {oran['value']}. {oran['direction']}"
+            badge = "Bilgi"
+        elif value_raw is None or peer_raw is None or pd.isna(value_raw) or pd.isna(peer_raw):
             comparison = "Karşılaştırma için veri yetersiz."
             badge = "Veri Yetersiz"
         else:
             fark = float(value_raw) - float(peer_raw)
-            if oran["key"] in ["fk", "pd_dd"]:
+            if oran["key"] in ["fk", "pd_dd", "fd_satislar", "fd_favok"]:
                 daha_iyi = fark < 0
                 badge = "İskontolu" if daha_iyi else "Primli"
             else:

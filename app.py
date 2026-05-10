@@ -135,6 +135,21 @@ ANALIST_KARNESI = [
     {"kurum": "Vakıf Yatırım", "analist": "Analist O", "basari": 64},
 ]
 
+# Kurum bazli hedef fiyat noktalarini yalnizca kaynak linki varsa grafikte goster.
+# Ornek kayit formati:
+# "TICKER": [
+#     {
+#         "tarih": "2026-05-01",
+#         "kurum": "Kurum Adi",
+#         "analist": "Analist / Rapor",
+#         "hedef": 123.45,
+#         "basari": 0,
+#         "kaynak": "https://...",
+#         "kaynak_baslik": "Rapor basligi",
+#     }
+# ]
+ANALIST_KAYNAKLARI = {}
+
 DONEMLER = {
     "1 Gün": {"period": "1d", "interval": "5m"},
     "1 Hafta": {"period": "5d", "interval": "30m"},
@@ -1079,7 +1094,7 @@ def grafik_olustur(
                     "line": {"color": "#ffffff", "width": 1},
                 },
                 customdata=[
-                    [nokta["kurum"], nokta["analist"], nokta["basari"]]
+                    [nokta["kurum"], nokta["analist"], nokta["kaynak_baslik"]]
                     for nokta in analist_noktalari
                 ],
                 hovertemplate=(
@@ -1087,7 +1102,7 @@ def grafik_olustur(
                     "Kurum: %{customdata[0]}<br>"
                     "Analist: %{customdata[1]}<br>"
                     f"Hedef Fiyat: %{{y:,.2f}} {para_birimi}<br>"
-                    "Başarı Oranı: %{customdata[2]}%"
+                    "Kaynak: %{customdata[2]}"
                     "<extra></extra>"
                 ),
             )
@@ -1248,53 +1263,43 @@ def analist_guven_etiketi(basari: int) -> tuple[str, str]:
 
 
 def analist_tahminleri_uret(veri: dict, usd_modu: bool, kur: float | None) -> list[dict]:
-    hedef_ortalama = veri.get("hedef_ortalama") or veri.get("hedef_fiyat")
-    hedef_yuksek = veri.get("hedef_yuksek") or hedef_ortalama
-    hedef_dusuk = veri.get("hedef_dusuk") or hedef_ortalama
-
-    if usd_modu:
-        hedef_ortalama = usd_degere_cevir(hedef_ortalama, kur, veri["para_birimi"])
-        hedef_yuksek = usd_degere_cevir(hedef_yuksek, kur, veri["para_birimi"])
-        hedef_dusuk = usd_degere_cevir(hedef_dusuk, kur, veri["para_birimi"])
-
-    if not hedef_ortalama:
-        return []
-
-    analist_sayisi = int(veri.get("analist_sayisi") or 6)
-    adet = max(3, min(15, analist_sayisi, len(ANALIST_KARNESI)))
-    bugun = pd.Timestamp.today().normalize()
-    aralik_alt = hedef_dusuk if hedef_dusuk else hedef_ortalama * 0.9
-    aralik_ust = hedef_yuksek if hedef_yuksek else hedef_ortalama * 1.1
-    yayilim = max(aralik_ust - aralik_alt, hedef_ortalama * 0.08)
-    ticker_tohumu = sum(ord(harf) for harf in veri["ticker"])
-
+    kaynakli_kayitlar = ANALIST_KAYNAKLARI.get(veri["ticker"].upper(), [])
     tahminler = []
-    for index, kart in enumerate(ANALIST_KARNESI[:adet]):
-        tarih = bugun - pd.DateOffset(days=15 + index * max(10, 165 // adet))
-        sapma = ((ticker_tohumu + index * 17) % 100) / 100 - 0.5
-        hedef = hedef_ortalama + sapma * yayilim * 0.7
-        hedef = max(aralik_alt * 0.92, min(aralik_ust * 1.08, hedef))
+    for kayit in kaynakli_kayitlar:
+        kaynak = str(kayit.get("kaynak") or "").strip()
+        hedef = pozitif_sayi(kayit.get("hedef"))
+        if not kaynak.startswith(("https://", "http://")) or hedef is None:
+            continue
+        if usd_modu:
+            hedef = usd_degere_cevir(hedef, kur, veri["para_birimi"])
+        if hedef is None:
+            continue
         tahminler.append(
             {
-                "tarih": tarih,
-                "kurum": kart["kurum"],
-                "analist": kart["analist"],
-                "basari": kart["basari"],
+                "tarih": pd.to_datetime(kayit.get("tarih"), errors="coerce"),
+                "kurum": kayit.get("kurum") or "Kurum",
+                "analist": kayit.get("analist") or "Rapor",
+                "basari": int(kayit.get("basari") or 0),
                 "hedef": hedef,
+                "kaynak": kaynak,
+                "kaynak_baslik": kayit.get("kaynak_baslik") or kaynak,
             }
         )
+    tahminler = [tahmin for tahmin in tahminler if not pd.isna(tahmin["tarih"])]
     return sorted(tahminler, key=lambda item: item["tarih"])
 
 
 def analist_detaylari_goster(veri: dict, tahminler: list[dict], para_birimi: str) -> None:
     if not tahminler:
-        st.caption("Analist detay listesi için yeterli hedef fiyat verisi bulunamadı.")
+        st.caption(
+            "Kaynak linkiyle doğrulanmış kurum bazlı hedef fiyat bulunamadı. "
+            "Bu nedenle grafikte analist hedef noktası gösterilmiyor."
+        )
         return
 
     with st.expander("Analist detayları ve son 6 ay hedef fiyat geçmişi", expanded=False):
         satirlar = []
-        for tahmin in sorted(tahminler, key=lambda item: item["basari"], reverse=True):
-            guven, renk = analist_guven_etiketi(tahmin["basari"])
+        for tahmin in sorted(tahminler, key=lambda item: item["tarih"], reverse=True):
             satirlar.append(
                 "".join(
                     [
@@ -1302,7 +1307,7 @@ def analist_detaylari_goster(veri: dict, tahminler: list[dict], para_birimi: str
                         f'<div><strong>{escape(tahmin["kurum"])}</strong><br><span>{escape(tahmin["analist"])}</span></div>',
                         f'<div>{escape(pd.Timestamp(tahmin["tarih"]).strftime("%d.%m.%Y"))}</div>',
                         f'<div>{escape(sayi_formatla(tahmin["hedef"], para_birimi))}</div>',
-                        f'<div><span class="confidence-badge" style="background:{renk};">{tahmin["basari"]}% - {escape(guven)}</span></div>',
+                        f'<div><a href="{escape(tahmin["kaynak"], quote=True)}" target="_blank" rel="noopener noreferrer">Kaynak</a></div>',
                         "</div>",
                     ]
                 )
@@ -1315,16 +1320,49 @@ def analist_detaylari_goster(veri: dict, tahminler: list[dict], para_birimi: str
                     <div>Kurum / Analist</div>
                     <div>Tarih</div>
                     <div>Hedef Fiyat</div>
-                    <div>Tutarlılık</div>
+                    <div>Kaynak</div>
                 </div>
                 {''.join(satirlar)}
             </div>
             <p class="analyst-note">
-                Bu analistin son 12 aydaki {escape(veri["ticker"])} tahmin tutarlılığı simülasyon karnesine göre gösterilir.
+                Bu listede yalnızca kaynak linki eklenmiş, doğrulanabilir kurum hedefleri gösterilir.
             </p>
             """
         )
         st.markdown(html, unsafe_allow_html=True)
+
+
+def analist_kaynaklari_goster(tahminler: list[dict]) -> None:
+    if not tahminler:
+        st.caption(
+            "Grafikte kurum bazlı analist hedefi gösterilmedi; çünkü bu hisse için kaynak linkiyle doğrulanmış hedef fiyat kaydı yok."
+        )
+        return
+
+    linkler = []
+    for tahmin in sorted(tahminler, key=lambda item: item["tarih"], reverse=True):
+        linkler.append(
+            "".join(
+                [
+                    '<li>',
+                    f'{escape(pd.Timestamp(tahmin["tarih"]).strftime("%d.%m.%Y"))} - ',
+                    f'{escape(tahmin["kurum"])}: ',
+                    f'<a href="{escape(tahmin["kaynak"], quote=True)}" target="_blank" rel="noopener noreferrer">',
+                    escape(str(tahmin.get("kaynak_baslik") or "Kaynak")),
+                    "</a>",
+                    "</li>",
+                ]
+            )
+        )
+    st.markdown(
+        f"""
+        <div class="analyst-note">
+            <strong>Analist hedef fiyat kaynakları</strong>
+            <ul>{''.join(linkler)}</ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def hedef_fiyat_grafigi_olustur(
@@ -2847,6 +2885,8 @@ st.plotly_chart(
     use_container_width=True,
     config={"displayModeBar": False, "scrollZoom": True},
 )
+
+analist_kaynaklari_goster(analist_tahminleri)
 
 analist_beklentileri_goster(
     veri,

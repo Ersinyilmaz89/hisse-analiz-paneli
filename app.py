@@ -973,6 +973,8 @@ def html_metinlestir(html: str) -> str:
 
 def tl_hedef_fiyat_cek(metin: str) -> float | None:
     desenler = [
+        r"hedef fiyat(?:ını|ı|i)?[^.]{0,120}(?:'den|den|seviyesinden)\s+([\d.]+,\d+|[\d.]+)\s*(?:TL|₺|'?ye|ye)",
+        r"hedef fiyat(?:ını|ı|i)?[^.]{0,120}(?:yükseltti|revize etti|çıkardı|korudu)[^.]{0,80}([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)",
         r"hedef fiyat(?:ını|ı|i)?[^0-9]{0,80}([\d.]+,\d+|[\d.]+)",
         r"([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)[^\.]{0,80}hedef fiyat",
         r"([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)",
@@ -984,6 +986,34 @@ def tl_hedef_fiyat_cek(metin: str) -> float | None:
         sayi = eslesme.group(1).replace(".", "").replace(",", ".")
         return pozitif_sayi(sayi)
     return None
+
+
+def kurum_adi_cek(metin: str) -> str:
+    kurumlar = [
+        "Deniz Yatırım",
+        "İş Yatırım",
+        "Is Yatırım",
+        "Ak Yatırım",
+        "Tacirler Yatırım",
+        "Global Menkul Değerler",
+        "Ünlü & Co",
+        "Ünlü Menkul",
+        "TERA Yatırım",
+        "Oyak Yatırım",
+        "Garanti BBVA Yatırım",
+        "Yapı Kredi Yatırım",
+        "Vakıf Yatırım",
+        "QNB Invest",
+        "Alnus Yatırım",
+        "A1 Capital",
+        "Gedik Yatırım",
+        "Halk Yatırım",
+    ]
+    metin_kucuk = metin.lower()
+    for kurum in kurumlar:
+        if kurum.lower() in metin_kucuk:
+            return kurum
+    return "HedefFiyat"
 
 
 def turkce_tarih_cek(metin: str) -> pd.Timestamp | None:
@@ -1390,68 +1420,67 @@ def hedeffiyat_tahminleri_getir(ticker: str) -> list[dict]:
     except Exception:
         return []
 
-    detay_url = None
-    for eslesme in re.finditer(r'<a[^>]+href="([^"]*?/senet/[^"]+)"[^>]*>([\s\S]*?)</a>', html, re.IGNORECASE):
+    aday_url_listesi = []
+    for eslesme in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', html, re.IGNORECASE):
         href, govde = eslesme.groups()
         metin = html_metinlestir(govde)
-        if kok in metin.upper():
-            detay_url = urljoin("https://hedeffiyat.com.tr/", href)
-            break
-    if not detay_url:
-        return []
+        href_kucuk = href.lower()
+        if kok in (metin + " " + href).upper() and any(parca in href_kucuk for parca in ["/senet/", "/hedef-fiyat/", "/rapor/"]):
+            aday_url_listesi.append(urljoin("https://hedeffiyat.com.tr/", href))
 
-    try:
-        detay_html = web_sayfasi_getir(detay_url)
-    except Exception:
+    aday_url_listesi = list(dict.fromkeys(aday_url_listesi))[:10]
+    if not aday_url_listesi:
         return []
-
-    metin = html_metinlestir(detay_html)
-    bolum = metin
-    if "Fiyat Tahminleri" in metin:
-        bolum = metin.split("Fiyat Tahminleri", 1)[1]
-    if "Raporlar" in bolum:
-        bolum = bolum.split("Raporlar", 1)[0]
 
     kayitlar = []
-    desen = re.compile(
-        r"Hedef Fiyat\s*([\d.,]+)\s*₺\s*(.*?)\s*((?:Pazartesi|Salı|Sali|Çarşamba|Carsamba|Perşembe|Persembe|Cuma|Cumartesi|Pazar),?\s*\d{1,2}\s+\w+\s+20\d{2})",
-        flags=re.IGNORECASE,
-    )
-    for index, eslesme in enumerate(desen.finditer(bolum)):
-        hedef = pozitif_sayi(eslesme.group(1).replace(".", "").replace(",", "."))
-        tarih = turkce_tarih_cek(eslesme.group(3))
+    for detay_url in aday_url_listesi:
+        try:
+            detay_html = web_sayfasi_getir(detay_url)
+        except Exception:
+            continue
+
+        metin = html_metinlestir(detay_html)
+        hedef = tl_hedef_fiyat_cek(metin)
+        tarih = turkce_tarih_cek(metin) or pd.Timestamp.today().normalize()
         if hedef is None or tarih is None:
             continue
-        tavsiye = re.sub(r"\s+", " ", eslesme.group(2)).strip() or "Hedef fiyat"
+        baslik_eslesme = re.search(r"<h1[^>]*>([\s\S]*?)</h1>", detay_html, flags=re.IGNORECASE)
+        baslik = html_metinlestir(baslik_eslesme.group(1)) if baslik_eslesme else f"{kok} hedef fiyat"
         kayitlar.append(
             {
                 "tarih": tarih,
-                "kurum": "HedefFiyat",
-                "analist": tavsiye,
+                "kurum": kurum_adi_cek(metin),
+                "analist": "Kaynaklı hedef fiyat",
                 "hedef": hedef,
                 "basari": 0,
                 "kaynak": detay_url,
-                "kaynak_baslik": f"{kok} hedef fiyat listesi",
+                "kaynak_baslik": baslik[:120],
             }
         )
-        if index >= 4:
+        if len(kayitlar) >= 6:
             break
     return kayitlar
 
 
 def rotaborsa_tahminleri_getir(ticker: str) -> list[dict]:
     kok = ticker_kok(ticker)
-    try:
-        html = web_sayfasi_getir("https://rotaborsa.com/hisse-hedef-fiyat/")
-    except Exception:
-        return []
+    sayfalar = [
+        "https://rotaborsa.com/hisse-hedef-fiyat/",
+        f"https://rotaborsa.com/?s={kok}+hedef+fiyat",
+    ]
 
     adaylar = []
-    for eslesme in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', html, re.IGNORECASE):
-        href, govde = eslesme.groups()
-        baslik = html_metinlestir(govde)
-        if kok in baslik.upper() and "hedef" in baslik.lower():
-            adaylar.append((urljoin("https://rotaborsa.com/", href), baslik))
+    for sayfa_url in sayfalar:
+        try:
+            html = web_sayfasi_getir(sayfa_url)
+        except Exception:
+            continue
+        for eslesme in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', html, re.IGNORECASE):
+            href, govde = eslesme.groups()
+            baslik = html_metinlestir(govde)
+            if kok in (baslik + " " + href).upper() and "hedef" in (baslik + " " + href).lower():
+                adaylar.append((urljoin("https://rotaborsa.com/", href), baslik))
+    adaylar = list(dict.fromkeys(adaylar))
 
     kayitlar = []
     for url, baslik in adaylar[:5]:

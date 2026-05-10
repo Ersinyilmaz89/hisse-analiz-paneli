@@ -7,6 +7,7 @@ import textwrap
 from html import escape, unescape
 from pathlib import Path
 from urllib.parse import urlencode
+from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -951,6 +952,78 @@ def public_oranlari_getir(ticker: str) -> dict:
     }
 
 
+def web_sayfasi_getir(url: str, timeout: int = 10) -> str:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def html_metinlestir(html: str) -> str:
+    temiz = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
+    temiz = re.sub(r"<style[\s\S]*?</style>", " ", temiz, flags=re.IGNORECASE)
+    temiz = unescape(re.sub(r"<[^>]+>", " ", temiz))
+    return re.sub(r"\s+", " ", temiz).strip()
+
+
+def tl_hedef_fiyat_cek(metin: str) -> float | None:
+    desenler = [
+        r"hedef fiyat(?:ını|ı|i)?[^0-9]{0,80}([\d.]+,\d+|[\d.]+)",
+        r"([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)[^\.]{0,80}hedef fiyat",
+        r"([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)",
+    ]
+    for desen in desenler:
+        eslesme = re.search(desen, metin, flags=re.IGNORECASE)
+        if not eslesme:
+            continue
+        sayi = eslesme.group(1).replace(".", "").replace(",", ".")
+        return pozitif_sayi(sayi)
+    return None
+
+
+def turkce_tarih_cek(metin: str) -> pd.Timestamp | None:
+    aylar = {
+        "ocak": 1,
+        "şubat": 2,
+        "subat": 2,
+        "mart": 3,
+        "nisan": 4,
+        "mayıs": 5,
+        "mayis": 5,
+        "haziran": 6,
+        "temmuz": 7,
+        "ağustos": 8,
+        "agustos": 8,
+        "eylül": 9,
+        "eylul": 9,
+        "ekim": 10,
+        "kasım": 11,
+        "kasim": 11,
+        "aralık": 12,
+        "aralik": 12,
+    }
+    eslesme = re.search(
+        r"(\d{1,2})\s+([A-Za-zÇĞİÖŞÜçğıöşü]+)\s+(20\d{2})",
+        metin,
+        flags=re.IGNORECASE,
+    )
+    if not eslesme:
+        return None
+    ay = aylar.get(eslesme.group(2).lower())
+    if not ay:
+        return None
+    return pd.Timestamp(year=int(eslesme.group(3)), month=ay, day=int(eslesme.group(1)))
+
+
+def ticker_kok(ticker: str) -> str:
+    return ticker.upper().removesuffix(".IS")
+
+
 def public_ile_dogrula(aday: float | None, public_deger: float | None, oran_tipi: str) -> float | None:
     aday = oran_temizle(aday, oran_tipi)
     public_deger = oran_temizle(public_deger, oran_tipi)
@@ -1263,7 +1336,8 @@ def analist_guven_etiketi(basari: int) -> tuple[str, str]:
 
 
 def analist_tahminleri_uret(veri: dict, usd_modu: bool, kur: float | None) -> list[dict]:
-    kaynakli_kayitlar = ANALIST_KAYNAKLARI.get(veri["ticker"].upper(), [])
+    kaynakli_kayitlar = kaynakli_analist_tahminleri_getir(veri["ticker"])
+    kaynakli_kayitlar.extend(ANALIST_KAYNAKLARI.get(veri["ticker"].upper(), []))
     tahminler = []
     for kayit in kaynakli_kayitlar:
         kaynak = str(kayit.get("kaynak") or "").strip()
@@ -1287,6 +1361,127 @@ def analist_tahminleri_uret(veri: dict, usd_modu: bool, kur: float | None) -> li
         )
     tahminler = [tahmin for tahmin in tahminler if not pd.isna(tahmin["tarih"])]
     return sorted(tahminler, key=lambda item: item["tarih"])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def kaynakli_analist_tahminleri_getir(ticker: str) -> list[dict]:
+    if not ticker.upper().endswith(".IS"):
+        return []
+
+    tahminler = []
+    tahminler.extend(hedeffiyat_tahminleri_getir(ticker))
+    tahminler.extend(rotaborsa_tahminleri_getir(ticker))
+
+    benzersiz = {}
+    for tahmin in tahminler:
+        anahtar = (
+            tahmin.get("kaynak"),
+            tahmin.get("hedef"),
+            str(tahmin.get("tarih")),
+        )
+        benzersiz[anahtar] = tahmin
+    return list(benzersiz.values())[:8]
+
+
+def hedeffiyat_tahminleri_getir(ticker: str) -> list[dict]:
+    kok = ticker_kok(ticker)
+    try:
+        html = web_sayfasi_getir("https://hedeffiyat.com.tr/")
+    except Exception:
+        return []
+
+    detay_url = None
+    for eslesme in re.finditer(r'<a[^>]+href="([^"]*?/senet/[^"]+)"[^>]*>([\s\S]*?)</a>', html, re.IGNORECASE):
+        href, govde = eslesme.groups()
+        metin = html_metinlestir(govde)
+        if kok in metin.upper():
+            detay_url = urljoin("https://hedeffiyat.com.tr/", href)
+            break
+    if not detay_url:
+        return []
+
+    try:
+        detay_html = web_sayfasi_getir(detay_url)
+    except Exception:
+        return []
+
+    metin = html_metinlestir(detay_html)
+    bolum = metin
+    if "Fiyat Tahminleri" in metin:
+        bolum = metin.split("Fiyat Tahminleri", 1)[1]
+    if "Raporlar" in bolum:
+        bolum = bolum.split("Raporlar", 1)[0]
+
+    kayitlar = []
+    desen = re.compile(
+        r"Hedef Fiyat\s*([\d.,]+)\s*₺\s*(.*?)\s*((?:Pazartesi|Salı|Sali|Çarşamba|Carsamba|Perşembe|Persembe|Cuma|Cumartesi|Pazar),?\s*\d{1,2}\s+\w+\s+20\d{2})",
+        flags=re.IGNORECASE,
+    )
+    for index, eslesme in enumerate(desen.finditer(bolum)):
+        hedef = pozitif_sayi(eslesme.group(1).replace(".", "").replace(",", "."))
+        tarih = turkce_tarih_cek(eslesme.group(3))
+        if hedef is None or tarih is None:
+            continue
+        tavsiye = re.sub(r"\s+", " ", eslesme.group(2)).strip() or "Hedef fiyat"
+        kayitlar.append(
+            {
+                "tarih": tarih,
+                "kurum": "HedefFiyat",
+                "analist": tavsiye,
+                "hedef": hedef,
+                "basari": 0,
+                "kaynak": detay_url,
+                "kaynak_baslik": f"{kok} hedef fiyat listesi",
+            }
+        )
+        if index >= 4:
+            break
+    return kayitlar
+
+
+def rotaborsa_tahminleri_getir(ticker: str) -> list[dict]:
+    kok = ticker_kok(ticker)
+    try:
+        html = web_sayfasi_getir("https://rotaborsa.com/hisse-hedef-fiyat/")
+    except Exception:
+        return []
+
+    adaylar = []
+    for eslesme in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', html, re.IGNORECASE):
+        href, govde = eslesme.groups()
+        baslik = html_metinlestir(govde)
+        if kok in baslik.upper() and "hedef" in baslik.lower():
+            adaylar.append((urljoin("https://rotaborsa.com/", href), baslik))
+
+    kayitlar = []
+    for url, baslik in adaylar[:5]:
+        try:
+            detay_html = web_sayfasi_getir(url)
+        except Exception:
+            continue
+        metin = html_metinlestir(detay_html)
+        hedef = tl_hedef_fiyat_cek(metin)
+        tarih = turkce_tarih_cek(metin) or pd.Timestamp.today().normalize()
+        if hedef is None:
+            continue
+        kurum_eslesme = re.search(
+            r"(?:aracı kurum|kurum|yatırım kuruluşu)\s+([A-ZÇĞİÖŞÜa-zçğıöşü0-9 .&-]{2,45})",
+            metin,
+            flags=re.IGNORECASE,
+        )
+        kurum = kurum_eslesme.group(1).strip() if kurum_eslesme else "Rota Borsa"
+        kayitlar.append(
+            {
+                "tarih": tarih,
+                "kurum": kurum,
+                "analist": "Hedef fiyat haberi",
+                "hedef": hedef,
+                "basari": 0,
+                "kaynak": url,
+                "kaynak_baslik": baslik[:120],
+            }
+        )
+    return kayitlar
 
 
 def analist_detaylari_goster(veri: dict, tahminler: list[dict], para_birimi: str) -> None:

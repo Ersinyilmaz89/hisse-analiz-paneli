@@ -977,7 +977,6 @@ def tl_hedef_fiyat_cek(metin: str) -> float | None:
         r"hedef fiyat(?:ını|ı|i)?[^.]{0,120}(?:yükseltti|revize etti|çıkardı|korudu)[^.]{0,80}([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)",
         r"hedef fiyat(?:ını|ı|i)?[^0-9]{0,80}([\d.]+,\d+|[\d.]+)",
         r"([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)[^\.]{0,80}hedef fiyat",
-        r"([\d.]+,\d+|[\d.]+)\s*(?:TL|₺)",
     ]
     for desen in desenler:
         eslesme = re.search(desen, metin, flags=re.IGNORECASE)
@@ -986,6 +985,13 @@ def tl_hedef_fiyat_cek(metin: str) -> float | None:
         sayi = eslesme.group(1).replace(".", "").replace(",", ".")
         return pozitif_sayi(sayi)
     return None
+
+
+def hedef_fiyat_makul_mu(hedef: float | None, referans_fiyat: float | None) -> bool:
+    if hedef is None or referans_fiyat is None or referans_fiyat <= 0:
+        return hedef is not None
+    oran = hedef / referans_fiyat
+    return 0.35 <= oran <= 2.75
 
 
 def kurum_adi_cek(metin: str) -> str:
@@ -1366,13 +1372,18 @@ def analist_guven_etiketi(basari: int) -> tuple[str, str]:
 
 
 def analist_tahminleri_uret(veri: dict, usd_modu: bool, kur: float | None) -> list[dict]:
-    kaynakli_kayitlar = kaynakli_analist_tahminleri_getir(veri["ticker"])
+    kaynakli_kayitlar = kaynakli_analist_tahminleri_getir(veri["ticker"], veri.get("guncel_fiyat"))
     kaynakli_kayitlar.extend(ANALIST_KAYNAKLARI.get(veri["ticker"].upper(), []))
     tahminler = []
     for kayit in kaynakli_kayitlar:
         kaynak = str(kayit.get("kaynak") or "").strip()
         hedef = pozitif_sayi(kayit.get("hedef"))
         if not kaynak.startswith(("https://", "http://")) or hedef is None:
+            continue
+        if kayit.get("para_birimi") == veri.get("para_birimi") and not hedef_fiyat_makul_mu(
+            hedef,
+            pozitif_sayi(veri.get("guncel_fiyat")),
+        ):
             continue
         if usd_modu:
             hedef = usd_degere_cevir(hedef, kur, veri["para_birimi"])
@@ -1394,13 +1405,13 @@ def analist_tahminleri_uret(veri: dict, usd_modu: bool, kur: float | None) -> li
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def kaynakli_analist_tahminleri_getir(ticker: str) -> list[dict]:
+def kaynakli_analist_tahminleri_getir(ticker: str, referans_fiyat: float | None = None) -> list[dict]:
     if not ticker.upper().endswith(".IS"):
         return []
 
     tahminler = []
-    tahminler.extend(hedeffiyat_tahminleri_getir(ticker))
-    tahminler.extend(rotaborsa_tahminleri_getir(ticker))
+    tahminler.extend(hedeffiyat_tahminleri_getir(ticker, referans_fiyat))
+    tahminler.extend(rotaborsa_tahminleri_getir(ticker, referans_fiyat))
 
     benzersiz = {}
     for tahmin in tahminler:
@@ -1413,7 +1424,7 @@ def kaynakli_analist_tahminleri_getir(ticker: str) -> list[dict]:
     return list(benzersiz.values())[:8]
 
 
-def hedeffiyat_tahminleri_getir(ticker: str) -> list[dict]:
+def hedeffiyat_tahminleri_getir(ticker: str, referans_fiyat: float | None = None) -> list[dict]:
     kok = ticker_kok(ticker)
     try:
         html = web_sayfasi_getir("https://hedeffiyat.com.tr/")
@@ -1442,7 +1453,7 @@ def hedeffiyat_tahminleri_getir(ticker: str) -> list[dict]:
         metin = html_metinlestir(detay_html)
         hedef = tl_hedef_fiyat_cek(metin)
         tarih = turkce_tarih_cek(metin) or pd.Timestamp.today().normalize()
-        if hedef is None or tarih is None:
+        if hedef is None or tarih is None or not hedef_fiyat_makul_mu(hedef, referans_fiyat):
             continue
         baslik_eslesme = re.search(r"<h1[^>]*>([\s\S]*?)</h1>", detay_html, flags=re.IGNORECASE)
         baslik = html_metinlestir(baslik_eslesme.group(1)) if baslik_eslesme else f"{kok} hedef fiyat"
@@ -1452,6 +1463,7 @@ def hedeffiyat_tahminleri_getir(ticker: str) -> list[dict]:
                 "kurum": kurum_adi_cek(metin),
                 "analist": "Kaynaklı hedef fiyat",
                 "hedef": hedef,
+                "para_birimi": "TRY",
                 "basari": 0,
                 "kaynak": detay_url,
                 "kaynak_baslik": baslik[:120],
@@ -1462,7 +1474,7 @@ def hedeffiyat_tahminleri_getir(ticker: str) -> list[dict]:
     return kayitlar
 
 
-def rotaborsa_tahminleri_getir(ticker: str) -> list[dict]:
+def rotaborsa_tahminleri_getir(ticker: str, referans_fiyat: float | None = None) -> list[dict]:
     kok = ticker_kok(ticker)
     sayfalar = [
         "https://rotaborsa.com/hisse-hedef-fiyat/",
@@ -1491,7 +1503,7 @@ def rotaborsa_tahminleri_getir(ticker: str) -> list[dict]:
         metin = html_metinlestir(detay_html)
         hedef = tl_hedef_fiyat_cek(metin)
         tarih = turkce_tarih_cek(metin) or pd.Timestamp.today().normalize()
-        if hedef is None:
+        if hedef is None or not hedef_fiyat_makul_mu(hedef, referans_fiyat):
             continue
         kurum_eslesme = re.search(
             r"(?:aracı kurum|kurum|yatırım kuruluşu)\s+([A-ZÇĞİÖŞÜa-zçğıöşü0-9 .&-]{2,45})",
@@ -1505,6 +1517,7 @@ def rotaborsa_tahminleri_getir(ticker: str) -> list[dict]:
                 "kurum": kurum,
                 "analist": "Hedef fiyat haberi",
                 "hedef": hedef,
+                "para_birimi": "TRY",
                 "basari": 0,
                 "kaynak": url,
                 "kaynak_baslik": baslik[:120],
